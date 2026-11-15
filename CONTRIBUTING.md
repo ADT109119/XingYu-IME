@@ -39,7 +39,7 @@ IME/
 │   ├── Resources/
 │   │   ├── Info.plist          # IMK 服務宣告、TIS Input Source ID 與圖示設定
 │   │   ├── AppIcon.icns        # 應用程式 Bundle 圖示
-│   │   ├── XingYu.tiff         # 選單列 Template 飛魚圖示 (16x16 / 32x32)
+│   │   ├── XingYuTemplate.tiff # 選單列 Template 飛魚圖示 (18x18 / 36x36)
 │   │   └── *.lproj/            # 多語系輸入法名稱本地化
 │   └── Sources/
 │       ├── main.swift          # IMKServer 啟動進入點

@@ -14,12 +14,32 @@
 [![Platform](https://img.shields.io/badge/macOS-13.0%2B-0F172A?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Core](https://img.shields.io/badge/Core-Rust-EA580C?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Frontend](https://img.shields.io/badge/Frontend-Swift%20%2F%20IMK-F05138?logo=swift&logoColor=white)](https://swift.org/)
-[![Tests](https://img.shields.io/badge/cargo%20test-14%20passed-059669)](#七-開發與測試-development--testing)
+[![Tests](https://img.shields.io/badge/cargo%20test-15%20passed-059669)](#七-開發與測試-development--testing)
 [![License: MIT](https://img.shields.io/badge/License-MIT-0284C7)](LICENSE)
 
 *An intelligent, low-latency Traditional Chinese (Bopomofo / Zhuyin) & seamless English mixed-typing Input Method Editor for macOS, powered by a Rust Lattice-Viterbi engine and a native Swift InputMethodKit UI.*
 
 </div>
+
+---
+
+## 效果展示與介面預覽 (Demo & Screenshots)
+
+### 即時組字、重選、注音文直出與中英混打動畫
+
+<p align="center">
+  <img src="assets/demo_typing.gif" alt="XingYu IME Typing & Reselection Demo" width="760" />
+</p>
+
+### 候選字詞列（橫向／直向 × 自訂／注音／英文標籤）與偏好設定
+
+<p align="center">
+  <img src="assets/screenshot_candidates.png" alt="XingYu IME Candidate Bar & Menu Bar Icon" width="840" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshot_preferences.png" alt="XingYu IME Preferences UI" width="840" />
+</p>
 
 ---
 
@@ -30,7 +50,8 @@
   - 透過 **Lattice + Viterbi 動態規劃解碼器**（`Lazy<Arc<PrefixTrie>>` 單例共享載入），支援長句連續不間斷輸入，邊打邊動態修正最佳上下文切詞。
 - **句中區段游標、多頁選字與點擊操作**
   - 打完長句後可使用 `←` / `→` 移動至句子中的任一詞彙區段原地更換候選詞，且即使縮短多音節詞（例如將「第一」改選為「地」），仍會自動保留後續音節繼續編輯。
-  - 透過數字鍵、滑鼠點擊或選字空白鍵選字後，文字仍保持於組字緩衝區內，可隨時再次重選或繼續輸入，直到按下 `Return (Enter)` 或空白鍵送出為止。
+  - 透過 `Return (Enter)`、數字鍵、滑鼠點擊或選字空白鍵選取候選詞後，文字仍保持於底線組字緩衝區內，可隨時以 `←` / `→` / `↓` 再次重選或繼續輸入；確認完畢後，於一般組字狀態再按一次 `Return (Enter)` 即可送出整句。
+  - 支援**台灣注音文直出 (`[注]`)**：單一注音符號（如 `ㄅ`、`ㄏ`、`ㄓ`、`ㄧ`、`ㄚ`）保底出現在第 1 頁候選列，完整音節（如 `ㄓㄨˋ`、`ㄏㄠˇ`）亦可直接選取純注音符號表達語意。
   - 支援**候選詞分頁瀏覽**（每頁 `5~9` 字可調，最多 200 筆同音字詞）：透過 `↑` / `↓` / `Tab`、`PageUp` / `PageDown`（`Fn + ↑/↓`）、選字模式 `[` / `]` 或滑鼠點擊 `‹` / `›` 自由翻頁，突破單頁 9 字限制。
   - 支援偏好設定中的**水平橫向 / 垂直直向**候選視窗切換，並精準跟隨當前編輯區段游標位置顯示。
 - **順序容錯拼合與長句錯字隔離 (Out-of-Order & Typo Isolation)**
@@ -111,7 +132,7 @@ chmod +x scripts/build.sh scripts/install.sh
 | **↑ / ↓ / Tab** | 進入選字模式並跨頁上／下或循環切換目前區段的候選詞，即時於組字區預覽 |
 | **PageUp / PageDown (`Fn + ↑/↓`)** | 快速切換上／下一頁候選詞（選字模式下亦可按 `[` / `]` 或點擊 `‹` / `›` 翻頁） |
 | **數字鍵 1 ~ 9** | 選字／游標重選狀態下按主鍵盤 `1~9`，或隨時按 **數字小鍵盤 / `Shift + 1~9`** 於句內套用當前頁對應編號候選詞 |
-| **Return (Enter)** | 確認並送出整句組字結果（含數字鍵盤 Enter；若於選字時先選取未涵蓋至句尾的較短前段字詞，會推進至剩餘音節繼續編輯） |
+| **Return (Enter)** | 選字／游標模式下套用目前高亮候選詞並留在緩衝區（仍可隨時重選）；一般組字狀態下立即送出整句結果（含數字鍵盤 Enter） |
 | **Backspace** | 刪除最後一個輸入鍵位或還原重組；緩衝區為空時放行給系統刪除已輸入文字 |
 | **Escape** | 退出選字／游標重選模式，或清空尚未送出的組字緩衝區 |
 | **Command + ,** | 隨時開啟「行魚輸入法偏好設定」視窗 |
@@ -154,7 +175,7 @@ XingYuIME	XingYuIME	5000
 
 ```text
 IME/
-├── assets/                     # Logo (logo.png) 與 GitHub Banner (banner.png)
+├── assets/                     # Logo (logo.png)、Banner、示範動畫 (demo_typing.gif) 與截圖
 ├── rust_engine/                # Rust 核心推論引擎 (staticlib + C-ABI)
 │   ├── Cargo.toml
 │   ├── data/lexicon.txt        # 172,592 筆繁體注音基礎詞庫
@@ -166,7 +187,7 @@ IME/
 │       ├── lexicon/            # Trie 前綴詞庫檢索與 CustomDictionary 熱重載
 │       └── phonetics/          # 注音音韻拼合與順序容錯
 ├── swift_frontend/             # macOS Swift + IMK 原生前端
-│   ├── Resources/              # Info.plist、AppIcon.icns、XingYu.tiff (選單列 Template 圖示) 與 *.lproj
+│   ├── Resources/              # Info.plist、AppIcon.icns、XingYuTemplate.tiff (選單列 Template 圖示) 與 *.lproj
 │   └── Sources/                # InputController、CandidateWindow、SettingsView 等
 ├── scripts/
 │   ├── build.sh                # 建置 Release 版並打包簽章 build/XingYuIME.app
@@ -183,7 +204,7 @@ IME/
 詳細架構導覽與貢獻流程請參閱 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ```bash
-# 執行 Rust 核心引擎單元測試（14 項整合與演算法測試）
+# 執行 Rust 核心引擎單元測試（15 項整合與演算法測試）
 cargo test --manifest-path rust_engine/Cargo.toml
 
 # 僅編譯並打包 .app 至 ./build/XingYuIME.app

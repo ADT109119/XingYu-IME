@@ -42,8 +42,10 @@
 				<string>com.jerryyen.inputmethod.XingYuIME.bopomofo</string>
 				<key>TISIntendedLanguage</key>
 				<string>zh-Hant</string>
+				<key>TISIconIsTemplate</key>
+				<true/>
 				<key>tsInputModeAlternateMenuIconFileKey</key>
-				<string>XingYu.tiff</string>
+				<string>XingYuTemplate.tiff</string>
 				<key>tsInputModeCharacterRepertoireKey</key>
 				<array>
 					<string>Hant</string>
@@ -56,9 +58,9 @@
 				<key>tsInputModeKeyEquivalentModifiersKey</key>
 				<integer>4608</integer>
 				<key>tsInputModeMenuIconFileKey</key>
-				<string>XingYu.tiff</string>
+				<string>XingYuTemplate.tiff</string>
 				<key>tsInputModePaletteIconFileKey</key>
-				<string>XingYu.tiff</string>
+				<string>XingYuTemplate.tiff</string>
 				<key>tsInputModePrimaryInScriptKey</key>
 				<true/>
 				<key>tsInputModeScriptKey</key>
@@ -98,6 +100,6 @@
 		<string>Hans</string>
 	</array>
 	<key>tsInputMethodIconFileKey</key>
-	<string>XingYu.tiff</string>
+	<string>XingYuTemplate.tiff</string>
 </dict>
 </plist>

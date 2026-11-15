@@ -417,4 +417,66 @@ mod tests {
             "learned character 育 should become default after manual selection"
         );
     }
+
+    #[test]
+    fn test_literal_bopomofo_symbols_on_first_page_and_reselection() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 1. 注音文：輸入單一注音符號（如 ㄓ 5 、ㄧ u 、ㄨ j 、ㄚ 8 ）時，
+        //    首選仍為正常漢字，但純注音符號本身應出現在第 1 頁前 9 名內（標記為「注」）
+        for (keys, expected_char, expected_zy) in [
+            ("5 ", "之", "ㄓ"),
+            ("u ", "一", "ㄧ"),
+            ("j ", "屋", "ㄨ"),
+            ("8 ", "阿", "ㄚ"),
+        ] {
+            dec.clear();
+            for ch in keys.chars() {
+                dec.push_char(ch);
+            }
+            let snap = dec.get_composition_snapshot(20);
+            assert_eq!(snap.preedit, expected_char);
+            let page1_pos = snap
+                .candidates
+                .iter()
+                .take(9)
+                .position(|c| c.text == expected_zy && c.annotation.as_deref() == Some("注"));
+            assert!(
+                page1_pos.is_some(),
+                "expected '{}' [注] on page 1 for '{}', got {:?}",
+                expected_zy,
+                keys,
+                snap.candidates
+                    .iter()
+                    .take(9)
+                    .map(|c| (&c.text, &c.annotation))
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        // 2. 完整音節如 5j4 亦提供純注音候選 ㄓㄨˋ [注]，且可在緩衝區內重複改選不同候選字
+        dec.clear();
+        for ch in "5j4".chars() {
+            dec.push_char(ch);
+        }
+        let snap1 = dec.get_composition_snapshot(30);
+        let zhu4_idx = snap1
+            .candidates
+            .iter()
+            .position(|c| c.text == "ㄓㄨˋ" && c.annotation.as_deref() == Some("注"))
+            .expect("expected ㄓㄨˋ [注] candidate for 5j4");
+        dec.apply_candidate_selection(zhu4_idx);
+        assert_eq!(dec.get_composition_snapshot(10).preedit, "ㄓㄨˋ");
+
+        // 在同一緩衝區內再次重選為「住」
+        let snap2 = dec.get_composition_snapshot(30);
+        let zhu_live_idx = snap2
+            .candidates
+            .iter()
+            .position(|c| c.text == "住")
+            .expect("住 should still be available for reselection");
+        dec.apply_candidate_selection(zhu_live_idx);
+        assert_eq!(dec.get_composition_snapshot(10).preedit, "住");
+    }
 }

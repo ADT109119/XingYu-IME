@@ -261,8 +261,9 @@ public class XingYuInputController: IMKInputController {
 
         case 36, 76: // Return / Enter (含數字鍵盤 Enter)
             if !engine.isEmpty {
-                if isSelectingCandidate {
-                    applySelectionOrCommit(at: selectedIndex, client: client, bySpace: false, commitOnComplete: true)
+                if isSelectingCandidate || engine.hasActiveCursor {
+                    // 選字模式按 Enter：套用目前反白候選詞並留在組字緩衝區（維持底線預覽），方便繼續重選或接續打字；確認完成後再按一次 Enter 即送出
+                    applySelectionOrCommit(at: selectedIndex, client: client, bySpace: false, commitOnComplete: false)
                 } else {
                     commitCurrentBuffer(client: client, bySpace: false)
                 }

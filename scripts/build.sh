@@ -23,7 +23,7 @@ mkdir -p "$RESOURCES_DIR"
 cp swift_frontend/Resources/Info.plist "$CONTENTS_DIR/Info.plist"
 echo -n "APPL????" > "$CONTENTS_DIR/PkgInfo"
 cp -R swift_frontend/Resources/*.lproj "$RESOURCES_DIR/"
-cp swift_frontend/Resources/XingYu.tiff "$RESOURCES_DIR/"
+cp swift_frontend/Resources/XingYuTemplate.tiff "$RESOURCES_DIR/"
 cp swift_frontend/Resources/AppIcon.icns "$RESOURCES_DIR/"
 
 echo "=== 3. Compiling Swift App with Rust Engine ==="

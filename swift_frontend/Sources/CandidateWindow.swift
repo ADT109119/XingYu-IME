@@ -73,6 +73,8 @@ struct CandidateView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .frame(maxWidth: expandWidth ? .infinity : nil, alignment: .leading)
+        .lineLimit(1)
+        .fixedSize(horizontal: !expandWidth, vertical: false)
         .background(isSelected ? Color.accentColor : Color.clear)
         .cornerRadius(6)
         .contentShape(Rectangle())
@@ -121,6 +123,8 @@ struct CandidateView: View {
             return Color.orange
         case "英":
             return Color.blue
+        case "注":
+            return Color.teal
         default:
             return Color.gray
         }

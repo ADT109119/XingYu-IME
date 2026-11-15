@@ -503,6 +503,60 @@ impl DualPathDecoder {
                     }
                 }
 
+                // 1A-2. 台灣「注音文 / 單純注音符號」直出候選：
+                // 單音節輸入時提供純注音候選（標註為「注」），單一注音符號（如 ㄅ、ㄏ、ㄓ、ㄧ、ㄚ）確保出現在第 1 頁以利快速選取，同時不覆蓋首選常用漢字
+                if target_end - target_start == 1 && !target_zy.is_empty() {
+                    let is_single_bopomofo_symbol = target_zy.chars().count() == 1
+                        && target_zy
+                            .chars()
+                            .next()
+                            .map(|c| ('\u{3105}'..='\u{3129}').contains(&c))
+                            .unwrap_or(false);
+                    let zy_adaptive = self.user_db.get_adaptive_boost(&target_zy, prev_word);
+
+                    let mut exact_non_zy_scores: Vec<f64> = candidates
+                        .iter()
+                        .filter(|c| {
+                            c.candidate_type == CandidateType::Chinese
+                                && c.span_start == target_start
+                                && c.span_end == target_end
+                                && c.text != target_zy
+                        })
+                        .map(|c| c.score)
+                        .collect();
+                    exact_non_zy_scores
+                        .sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+                    let zy_score = if exact_non_zy_scores.is_empty() {
+                        4260.0 + zy_adaptive
+                    } else if is_single_bopomofo_symbol {
+                        let anchor_idx = 2.min(exact_non_zy_scores.len() - 1);
+                        let anchor = exact_non_zy_scores[anchor_idx];
+                        (anchor - 5.0).max(3800.0) + zy_adaptive
+                    } else {
+                        // 完整音節注音（如 ㄓㄨˋ、ㄏㄠˇ）置於第 1 頁末段或第 2 頁初（不擠佔常用前 7 漢字）
+                        let anchor_idx = 7.min(exact_non_zy_scores.len() - 1);
+                        let anchor = exact_non_zy_scores[anchor_idx];
+                        (anchor - 5.0).max(3450.0) + zy_adaptive
+                    };
+
+                    if let Some(existing) = candidates.iter_mut().find(|c| c.text == target_zy) {
+                        if zy_score > existing.score {
+                            existing.score = zy_score;
+                        }
+                        existing.annotation = Some("注".to_string());
+                    } else {
+                        candidates.push(Candidate {
+                            text: target_zy.clone(),
+                            score: zy_score,
+                            candidate_type: CandidateType::Chinese,
+                            annotation: Some("注".to_string()),
+                            span_start: target_start,
+                            span_end: target_end,
+                        });
+                    }
+                }
+
                 // 1B. 若在選詞游標模式下（或有多音節），也同時提供更長詞彙（如 3 字詞）或縮短為 1 字詞的選項，方便使用者自由分詞/併詞重選！
                 let alt_max = (target_start + 5).min(max_end);
                 for end_idx in (target_start + 1..=alt_max).rev() {
