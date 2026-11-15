@@ -1,3 +1,7 @@
+# 行魚輸入法 (XingYu IME)
+
+**「行如流水，如魚得水」— 專為 macOS 打造的 Rust × Swift 高效能智慧繁體注音與中英混打輸入法**
+
 <div align="center">
 
 <img src="assets/banner.png" alt="XingYu IME Banner" width="100%" />
@@ -5,11 +9,6 @@
 <br />
 <br />
 
-<img src="assets/logo.png" alt="行魚輸入法 Logo" width="112" height="112" />
-
-# 行魚輸入法 (XingYu IME)
-
-**「行如流水，如魚得水」— 專為 macOS 打造的 Rust × Swift 高效能智慧繁體注音與中英混打輸入法**
 
 [![Platform](https://img.shields.io/badge/macOS-13.0%2B-0F172A?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Core](https://img.shields.io/badge/Core-Rust-EA580C?logo=rust&logoColor=white)](https://www.rust-lang.org/)
