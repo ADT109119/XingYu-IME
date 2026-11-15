@@ -84,8 +84,7 @@ for arch in "${ARCHS[@]}"; do
         -target "${arch}-apple-macos${MACOSX_DEPLOYMENT_TARGET}" \
         -import-objc-header swift_frontend/Sources/Bridging-Header.h \
         -I rust_engine/include \
-        -L "rust_engine/target/${target}/release" \
-        -lxingyu_engine \
+        "rust_engine/target/${target}/release/libxingyu_engine.a" \
         -framework Cocoa \
         -framework InputMethodKit \
         -framework SwiftUI \

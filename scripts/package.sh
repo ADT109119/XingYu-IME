@@ -33,8 +33,13 @@ ARCHIVE_NAME="XingYuIME-${VERSION}-${ARCH_LABEL}.zip"
 ARCHIVE_PATH="$DIR/build/${ARCHIVE_NAME}"
 SHA_PATH="${ARCHIVE_PATH}.sha256"
 
-echo "=== Verifying Code Signature ==="
+echo "=== Verifying Code Signature & Static Linking ==="
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+otool -L "$APP_BUNDLE/Contents/MacOS/XingYuIME"
+if otool -L "$APP_BUNDLE/Contents/MacOS/XingYuIME" | grep -q "libxingyu_engine"; then
+    echo "ERROR: XingYuIME dynamically links libxingyu_engine instead of static linking!" >&2
+    exit 1
+fi
 
 echo "=== Packaging $ARCHIVE_NAME ==="
 rm -f "$ARCHIVE_PATH" "$SHA_PATH"
