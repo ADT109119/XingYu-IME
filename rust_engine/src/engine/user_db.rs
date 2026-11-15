@@ -63,6 +63,14 @@ impl UserAdaptiveDb {
 
     /// 當使用者確認輸出文字時（Commit Event），更新詞頻與詞袋搭配關係
     pub fn record_commit(&self, words: &[&str]) {
+        self.record_commit_with_prev(None, words);
+    }
+
+    /// 記錄提交詞序列，並選擇性將前一次提交的尾詞串接為跨句 Bigram（不重複累加前詞 Unigram）
+    pub fn record_commit_with_prev(&self, prev_word: Option<&str>, words: &[&str]) {
+        if words.is_empty() {
+            return;
+        }
         let Some(ref mutex) = self.conn else { return };
         let mut conn = mutex.lock().unwrap();
         let tx = match conn.transaction() {
@@ -75,7 +83,7 @@ impl UserAdaptiveDb {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        for word in words {
+        for word in words.iter().copied().filter(|w| !w.is_empty()) {
             let _ = tx.execute(
                 r#"
                 INSERT INTO user_unigrams (word, count, last_used)
@@ -88,10 +96,10 @@ impl UserAdaptiveDb {
             );
         }
 
-        // 紀錄二元轉移機率 (Bigram)
-        for window in words.windows(2) {
-            let prev = window[0];
-            let next = window[1];
+        let insert_bigram = |prev: &str, next: &str| {
+            if prev.is_empty() || next.is_empty() {
+                return;
+            }
             let _ = tx.execute(
                 r#"
                 INSERT INTO user_bigrams (prev_word, next_word, count, last_used)
@@ -102,6 +110,15 @@ impl UserAdaptiveDb {
                 "#,
                 params![prev, next, now],
             );
+        };
+
+        if let (Some(prev), Some(first)) = (prev_word, words.first().copied()) {
+            insert_bigram(prev, first);
+        }
+
+        // 紀錄句內二元轉移機率 (Bigram)
+        for window in words.windows(2) {
+            insert_bigram(window[0], window[1]);
         }
 
         let _ = tx.commit();
@@ -120,8 +137,8 @@ impl UserAdaptiveDb {
             params![word],
             |row| row.get::<_, i64>(0),
         ) {
-            // 對數或線性加權，避免過度主導
-            boost += (count as f64).min(20.0) * 50.0;
+            // 只要選用過一次即給予顯著基礎加權，讓學習效果立即可見並能蓋過常見靜態分數差距
+            boost += 180.0 + (count as f64).min(25.0) * 180.0;
         }
 
         // 查詢上下文 Bigram 轉移加權
@@ -131,7 +148,7 @@ impl UserAdaptiveDb {
                 params![prev, word],
                 |row| row.get::<_, i64>(0),
             ) {
-                boost += (bcount as f64).min(10.0) * 120.0;
+                boost += 220.0 + (bcount as f64).min(15.0) * 320.0;
             }
         }
 

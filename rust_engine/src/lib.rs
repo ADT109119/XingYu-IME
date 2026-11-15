@@ -348,4 +348,73 @@ mod tests {
             assert_eq!(snap_eng.preedit, eng);
         }
     }
+
+    #[test]
+    fn test_polyphonic_defaults_phrase_scoring_and_sentence_learning() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 1. "m4" (ㄩˋ) 不應預設為「與」(ㄩˇ 為主讀音)
+        for ch in "m4".chars() {
+            dec.push_char(ch);
+        }
+        let snap_yu4 = dec.get_composition_snapshot(10);
+        assert!(snap_yu4.is_valid_zhuyin);
+        assert_ne!(
+            snap_yu4.preedit, "與",
+            "m4 (ㄩˋ) should not default to 與, got {}",
+            snap_yu4.preedit
+        );
+        dec.clear();
+
+        // 2. 常見雙字詞應優先於兩個高頻單字拆開（修正 著因/鬼一/與社）
+        for (keys, expected) in [("5j4up", "注音"), ("ejo3u4", "詭異"), ("m4gk4", "預設")] {
+            let mut d = DualPathDecoder::new();
+            d.user_db = UserAdaptiveDb::in_memory().unwrap();
+            for ch in keys.chars() {
+                d.push_char(ch);
+            }
+            let snap = d.get_composition_snapshot(10);
+            assert_eq!(
+                snap.preedit, expected,
+                "expected '{}' for keys '{}', got '{}'",
+                expected, keys, snap.preedit
+            );
+        }
+
+        // 3. 整句提交應同時寫入個別分詞 Unigram 與句內 Bigram，且選字後立刻生效
+        for ch in "5j4upm4gk4".chars() {
+            dec.push_char(ch);
+        }
+        let sentence = dec.get_composition_snapshot(10).preedit;
+        assert_eq!(sentence, "注音預設");
+        dec.commit_text(&sentence);
+        let (unigrams, bigrams) = dec.user_db.get_stats();
+        assert!(unigrams >= 2, "expected >=2 unigrams, got {}", unigrams);
+        assert!(bigrams >= 1, "expected >=1 bigrams recorded, got {}", bigrams);
+
+        // 4. 手動改選「育」(m4 -> ㄩˋ) 並提交後，下次輸入 m4 應立即優先出現「育」
+        for ch in "m4".chars() {
+            dec.push_char(ch);
+        }
+        let yu_idx = dec
+            .get_composition_snapshot(20)
+            .candidates
+            .iter()
+            .position(|c| c.text == "育")
+            .expect("育 should be a candidate for m4");
+        dec.apply_candidate_selection(yu_idx);
+        let committed_yu = dec.get_composition_snapshot(10).preedit;
+        assert_eq!(committed_yu, "育");
+        dec.commit_text(&committed_yu);
+
+        for ch in "m4".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(
+            dec.get_composition_snapshot(10).preedit,
+            "育",
+            "learned character 育 should become default after manual selection"
+        );
+    }
 }

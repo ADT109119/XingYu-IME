@@ -642,8 +642,53 @@ impl DualPathDecoder {
 
     /// 記錄使用者提交結果並重置輸入緩衝
     pub fn commit_text(&mut self, text: &str) {
-        self.last_committed_word = Some(text.to_string());
-        self.user_db.record_commit(&[text]);
+        if text.is_empty() {
+            self.clear();
+            return;
+        }
+
+        let (segments, syllables, _, is_valid) = self.build_sentence_segments();
+        let prev_last = self.last_committed_word.clone();
+        let valid_segments: Vec<&DecodedSegment> = if is_valid {
+            segments
+                .iter()
+                .filter(|seg| {
+                    !seg.word.is_empty()
+                        && (seg.start_syl..seg.end_syl)
+                            .all(|idx| syllables.get(idx).map(|s| s.is_valid).unwrap_or(false))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let joined_valid: String = valid_segments.iter().map(|s| s.word.as_str()).collect();
+        if !valid_segments.is_empty() && (joined_valid == text || segments.iter().map(|s| s.word.as_str()).collect::<String>() == text) {
+            let seg_words: Vec<&str> = valid_segments.iter().map(|s| s.word.as_str()).collect();
+            self.user_db
+                .record_commit_with_prev(prev_last.as_deref(), &seg_words);
+
+            // 使用者手動選過字的區段額外強化一次 Unigram 權重，確保下次直接偏好該字詞
+            for seg in &valid_segments {
+                if self
+                    .user_overrides
+                    .iter()
+                    .any(|(s, e, _)| *s == seg.start_syl && *e == seg.end_syl)
+                {
+                    self.user_db.record_commit(&[seg.word.as_str()]);
+                }
+            }
+            self.last_committed_word = valid_segments.last().map(|s| s.word.clone());
+        } else {
+            self.user_db
+                .record_commit_with_prev(prev_last.as_deref(), &[text]);
+            // 單字/單詞由候選窗直接選字送出時（與原預設不同），給予額外強化
+            if is_valid && valid_segments.len() == 1 && valid_segments[0].word != text {
+                self.user_db.record_commit(&[text]);
+            }
+            self.last_committed_word = Some(text.to_string());
+        }
+
         self.clear();
     }
 
@@ -736,8 +781,15 @@ impl DualPathDecoder {
                     .iter()
                     .map(|s| s.to_canonical_string())
                     .collect();
+                let dp_prev_word = if i > 0 {
+                    dp_prev[i].as_ref().map(|(_, w, _)| w.as_str())
+                } else {
+                    None
+                };
 
-                if let Some((word, edge_score)) = self.best_word_for_span(i, j, &span_zy) {
+                if let Some((word, edge_score)) =
+                    self.best_word_for_span(i, j, &span_zy, dp_prev_word)
+                {
                     let cand_score = dp_score[i] + edge_score;
                     if cand_score > dp_score[j] {
                         dp_score[j] = cand_score;
@@ -776,7 +828,13 @@ impl DualPathDecoder {
         (segments, syllables, resolved_len, is_valid)
     }
 
-    fn best_word_for_span(&self, start: usize, end: usize, zhuyin: &str) -> Option<(String, f64)> {
+    fn best_word_for_span(
+        &self,
+        start: usize,
+        end: usize,
+        zhuyin: &str,
+        prev_word_override: Option<&str>,
+    ) -> Option<(String, f64)> {
         // 1. 使用者手動選詞覆寫（最高優先級）
         if let Some((_, _, word)) = self
             .user_overrides
@@ -791,10 +849,10 @@ impl DualPathDecoder {
             return Some((word, score + 10_000.0));
         }
 
-        let prev_word = self.last_committed_word.as_deref();
+        let prev_word = prev_word_override.or(self.last_committed_word.as_deref());
         let span_len = end - start;
         let phrase_bonus = if span_len >= 2 {
-            (span_len - 1) as f64 * 1200.0
+            (span_len - 1) as f64 * 1850.0
         } else {
             0.0
         };

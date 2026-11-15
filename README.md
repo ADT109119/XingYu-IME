@@ -14,7 +14,7 @@
 [![Platform](https://img.shields.io/badge/macOS-13.0%2B-0F172A?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Core](https://img.shields.io/badge/Core-Rust-EA580C?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Frontend](https://img.shields.io/badge/Frontend-Swift%20%2F%20IMK-F05138?logo=swift&logoColor=white)](https://swift.org/)
-[![Tests](https://img.shields.io/badge/cargo%20test-13%20passed-059669)](#七-開發與測試-development--testing)
+[![Tests](https://img.shields.io/badge/cargo%20test-14%20passed-059669)](#七-開發與測試-development--testing)
 [![License: MIT](https://img.shields.io/badge/License-MIT-0284C7)](LICENSE)
 
 *An intelligent, low-latency Traditional Chinese (Bopomofo / Zhuyin) & seamless English mixed-typing Input Method Editor for macOS, powered by a Rust Lattice-Viterbi engine and a native Swift InputMethodKit UI.*
@@ -183,7 +183,7 @@ IME/
 詳細架構導覽與貢獻流程請參閱 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ```bash
-# 執行 Rust 核心引擎單元測試（13 項整合與演算法測試）
+# 執行 Rust 核心引擎單元測試（14 項整合與演算法測試）
 cargo test --manifest-path rust_engine/Cargo.toml
 
 # 僅編譯並打包 .app 至 ./build/XingYuIME.app
