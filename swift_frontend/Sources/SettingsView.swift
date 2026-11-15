@@ -187,18 +187,39 @@ public struct SettingsView: View {
     }
 
     // MARK: - 4. 關於行魚
+    private var appIconImage: NSImage? {
+        Bundle.main.image(forResource: NSImage.Name("AppIcon"))
+    }
+
+    private var appVersionText: String {
+        let info = Bundle.main.infoDictionary
+        let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        let buildNumber = info?["CFBundleVersion"] as? String ?? "1"
+        return "版本 \(shortVersion) (Build \(buildNumber))"
+    }
+
     private var aboutTab: some View {
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "fish.circle.fill")
-                .resizable()
-                .frame(width: 64, height: 64)
-                .foregroundColor(.accentColor)
+            if let appIcon = appIconImage {
+                Image(nsImage: appIcon)
+                    .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 80, height: 80)
+                    .shadow(color: .black.opacity(0.18), radius: 6, y: 3)
+            } else {
+                Image(systemName: "fish.circle.fill")
+                    .resizable()
+                    .frame(width: 64, height: 64)
+                    .foregroundColor(.accentColor)
+            }
 
             Text("行魚輸入法 (XingYu IME)")
                 .font(.title).bold()
 
-            Text("版本 1.0.0 (Build 2026)")
+            Text(appVersionText)
                 .font(.caption).foregroundColor(.secondary)
 
             Text("「行如流水，如魚得水」\n專為 macOS 打造的高效能智慧注音輸入法")
