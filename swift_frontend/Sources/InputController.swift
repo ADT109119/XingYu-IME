@@ -262,8 +262,8 @@ public class XingYuInputController: IMKInputController {
         case 36, 76: // Return / Enter (含數字鍵盤 Enter)
             if !engine.isEmpty {
                 if isSelectingCandidate || engine.hasActiveCursor {
-                    // 選字模式按 Enter：套用目前反白候選詞並留在組字緩衝區（維持底線預覽），方便繼續重選或接續打字；確認完成後再按一次 Enter 即送出
-                    applySelectionOrCommit(at: selectedIndex, client: client, bySpace: false, commitOnComplete: false)
+                    // 選字時按 Enter：若僅選取較短前段詞會推進至剩餘音節；一旦選完至句尾最後一字，直接確認並送出整句（無需再多按一次 Enter）
+                    applySelectionOrCommit(at: selectedIndex, client: client, bySpace: false, commitOnComplete: true)
                 } else {
                     commitCurrentBuffer(client: client, bySpace: false)
                 }
@@ -472,7 +472,7 @@ public class XingYuInputController: IMKInputController {
         client.setMarkedText(preview as NSString, selectionRange: NSRange(location: preview.utf16.count, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
     }
 
-    private func updateUI(client: IMKTextInput, keepSelectingIfActiveCursor: Bool = false) {
+    private func updateUI(client: IMKTextInput, keepSelectingIfActiveCursor: Bool = false, hideCandidates: Bool = false) {
         if engine.isEmpty {
             client.setMarkedText("" as NSString, selectionRange: NSRange(location: 0, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
             candidatePanel.hide()
@@ -493,7 +493,11 @@ public class XingYuInputController: IMKInputController {
 
         let selRange = NSRange(location: snap.cursor_utf16, length: snap.selection_len_utf16)
         client.setMarkedText(snap.preedit as NSString, selectionRange: selRange, replacementRange: NSRange(location: NSNotFound, length: 0))
-        showCandidates(client: client)
+        if hideCandidates && !engine.hasActiveCursor {
+            candidatePanel.hide()
+        } else {
+            showCandidates(client: client)
+        }
     }
 
     private func showCandidates(client: IMKTextInput) {
@@ -562,7 +566,8 @@ public class XingYuInputController: IMKInputController {
 
         if engine.selectCandidate(at: index) {
             selectedIndex = 0
-            updateUI(client: client, keepSelectingIfActiveCursor: true)
+            // 透過數字鍵 / 點擊 / 空白鍵選完最後一字後：先收合選字窗避免誤以為還要再選，同時保持底線組字狀態方便重選或一次 Enter 送出
+            updateUI(client: client, keepSelectingIfActiveCursor: true, hideCandidates: !engine.hasActiveCursor)
             return
         }
 
