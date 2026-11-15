@@ -97,7 +97,7 @@ public class XingYuInputController: IMKInputController {
 
     @objc public func openAbout() {
         DispatchQueue.main.async {
-            SettingsWindowController.shared.show(engine: self.engine, customDictPath: self.customDictPath)
+            SettingsWindowController.shared.show(engine: self.engine, customDictPath: self.customDictPath, tab: .about)
         }
     }
 

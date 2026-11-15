@@ -26,9 +26,11 @@ public class SettingsModel: ObservableObject {
     @Published public var newKey: String = ""
     @Published public var dictStatusMessage: String?
 
-    // 學習資料庫統計
+    // 學習資料庫統計與明細
     @Published public var unigramCount: Int = 0
     @Published public var bigramCount: Int = 0
+    @Published public var learnedUnigrams: [LearnedUnigramItem] = []
+    @Published public var learnedBigrams: [LearnedBigramItem] = []
 
     private weak var engine: SmartEngine?
 
@@ -63,6 +65,21 @@ public class SettingsModel: ObservableObject {
             let stats = engine.getLearningStats()
             self.unigramCount = stats.unigrams
             self.bigramCount = stats.bigrams
+            let entries = engine.getLearningEntries(limit: 500)
+            self.learnedUnigrams = entries.unigrams
+            self.learnedBigrams = entries.bigrams
+        }
+    }
+
+    public func deleteUnigram(_ word: String) {
+        if let engine = engine, engine.deleteLearnedUnigram(word: word) {
+            refreshStats()
+        }
+    }
+
+    public func deleteBigram(prevWord: String, nextWord: String) {
+        if let engine = engine, engine.deleteLearnedBigram(prevWord: prevWord, nextWord: nextWord) {
+            refreshStats()
         }
     }
 

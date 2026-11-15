@@ -1,7 +1,32 @@
 use rusqlite::{params, Connection};
+use serde::Serialize;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// 單詞學習紀錄項目
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LearnedUnigram {
+    pub word: String,
+    pub count: i64,
+    pub last_used: i64,
+}
+
+/// 詞彙二元搭配學習紀錄項目
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LearnedBigram {
+    pub prev_word: String,
+    pub next_word: String,
+    pub count: i64,
+    pub last_used: i64,
+}
+
+/// 學習詞袋列表快照
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LearningEntriesSnapshot {
+    pub unigrams: Vec<LearnedUnigram>,
+    pub bigrams: Vec<LearnedBigram>,
+}
 
 /// 使用者詞袋與自適應學習資料庫 (SQLite 儲存)
 pub struct UserAdaptiveDb {
@@ -168,6 +193,97 @@ impl UserAdaptiveDb {
             .unwrap_or(0);
 
         (unigrams, bigrams)
+    }
+
+    /// 列出目前學習到的單詞（預設依最近使用時間與次數排序）
+    pub fn list_unigrams(&self, limit: usize) -> Vec<LearnedUnigram> {
+        let Some(ref mutex) = self.conn else { return Vec::new() };
+        let conn = mutex.lock().unwrap();
+        let row_limit = limit.max(1) as i64;
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT word, count, last_used
+             FROM user_unigrams
+             ORDER BY last_used DESC, count DESC, word ASC
+             LIMIT ?1",
+        ) else {
+            return Vec::new();
+        };
+
+        let Ok(rows) = stmt.query_map(params![row_limit], |row| {
+            Ok(LearnedUnigram {
+                word: row.get(0)?,
+                count: row.get(1)?,
+                last_used: row.get(2)?,
+            })
+        }) else {
+            return Vec::new();
+        };
+
+        rows.filter_map(Result::ok).collect()
+    }
+
+    /// 列出目前學習到的詞彙二元搭配（預設依最近使用時間與次數排序）
+    pub fn list_bigrams(&self, limit: usize) -> Vec<LearnedBigram> {
+        let Some(ref mutex) = self.conn else { return Vec::new() };
+        let conn = mutex.lock().unwrap();
+        let row_limit = limit.max(1) as i64;
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT prev_word, next_word, count, last_used
+             FROM user_bigrams
+             ORDER BY last_used DESC, count DESC, prev_word ASC, next_word ASC
+             LIMIT ?1",
+        ) else {
+            return Vec::new();
+        };
+
+        let Ok(rows) = stmt.query_map(params![row_limit], |row| {
+            Ok(LearnedBigram {
+                prev_word: row.get(0)?,
+                next_word: row.get(1)?,
+                count: row.get(2)?,
+                last_used: row.get(3)?,
+            })
+        }) else {
+            return Vec::new();
+        };
+
+        rows.filter_map(Result::ok).collect()
+    }
+
+    /// 取得學習詞袋完整清單快照
+    pub fn get_entries_snapshot(&self, limit: usize) -> LearningEntriesSnapshot {
+        LearningEntriesSnapshot {
+            unigrams: self.list_unigrams(limit),
+            bigrams: self.list_bigrams(limit),
+        }
+    }
+
+    /// 刪除指定單詞的學習紀錄（並一併清理包含該詞的二元搭配紀錄）
+    pub fn delete_unigram(&self, word: &str) -> rusqlite::Result<bool> {
+        let Some(ref mutex) = self.conn else { return Ok(false) };
+        let mut conn = mutex.lock().unwrap();
+        let tx = conn.transaction()?;
+        let affected_unigrams = tx.execute(
+            "DELETE FROM user_unigrams WHERE word = ?1",
+            params![word],
+        )?;
+        let affected_bigrams = tx.execute(
+            "DELETE FROM user_bigrams WHERE prev_word = ?1 OR next_word = ?1",
+            params![word],
+        )?;
+        tx.commit()?;
+        Ok(affected_unigrams > 0 || affected_bigrams > 0)
+    }
+
+    /// 刪除指定的二元搭配學習紀錄
+    pub fn delete_bigram(&self, prev_word: &str, next_word: &str) -> rusqlite::Result<bool> {
+        let Some(ref mutex) = self.conn else { return Ok(false) };
+        let conn = mutex.lock().unwrap();
+        let affected = conn.execute(
+            "DELETE FROM user_bigrams WHERE prev_word = ?1 AND next_word = ?2",
+            params![prev_word, next_word],
+        )?;
+        Ok(affected > 0)
     }
 
     /// 清空所有使用者學習詞庫與習慣

@@ -10,6 +10,26 @@ public struct CandidateItem: Codable, Identifiable {
     public let span_end: Int?
 }
 
+public struct LearnedUnigramItem: Codable, Identifiable, Equatable {
+    public var id: String { word }
+    public let word: String
+    public let count: Int
+    public let last_used: Int64
+}
+
+public struct LearnedBigramItem: Codable, Identifiable, Equatable {
+    public var id: String { "\(prev_word)\u{0000}\(next_word)" }
+    public let prev_word: String
+    public let next_word: String
+    public let count: Int
+    public let last_used: Int64
+}
+
+public struct LearningEntriesSnapshot: Codable {
+    public let unigrams: [LearnedUnigramItem]
+    public let bigrams: [LearnedBigramItem]
+}
+
 public struct CompositionSnapshot: Codable {
     public let preedit: String
     public let cursor_utf16: Int
@@ -142,6 +162,33 @@ public class SmartEngine {
         var b: Int = 0
         smart_ime_get_learning_stats(handle, &u, &b)
         return (u, b)
+    }
+
+    public func getLearningEntries(limit: Int = 500) -> LearningEntriesSnapshot {
+        guard let handle = handle else { return LearningEntriesSnapshot(unigrams: [], bigrams: []) }
+        guard let cStr = smart_ime_get_learning_entries_json(handle, limit) else {
+            return LearningEntriesSnapshot(unigrams: [], bigrams: [])
+        }
+        let jsonString = String(cString: cStr)
+        smart_ime_free_string(UnsafeMutablePointer(mutating: cStr))
+
+        guard let data = jsonString.data(using: .utf8),
+              let snapshot = try? JSONDecoder().decode(LearningEntriesSnapshot.self, from: data) else {
+            return LearningEntriesSnapshot(unigrams: [], bigrams: [])
+        }
+        return snapshot
+    }
+
+    @discardableResult
+    public func deleteLearnedUnigram(word: String) -> Bool {
+        guard let handle = handle else { return false }
+        return smart_ime_delete_learned_unigram(handle, word)
+    }
+
+    @discardableResult
+    public func deleteLearnedBigram(prevWord: String, nextWord: String) -> Bool {
+        guard let handle = handle else { return false }
+        return smart_ime_delete_learned_bigram(handle, prevWord, nextWord)
     }
 
     public func clearLearningDb() -> Bool {

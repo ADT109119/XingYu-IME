@@ -183,6 +183,60 @@ pub extern "C" fn smart_ime_get_learning_stats(
 }
 
 #[no_mangle]
+pub extern "C" fn smart_ime_get_learning_entries_json(
+    engine: *mut DualPathDecoder,
+    limit: usize,
+) -> *const c_char {
+    if engine.is_null() {
+        return CString::new("{\"unigrams\":[],\"bigrams\":[]}")
+            .unwrap_or_default()
+            .into_raw();
+    }
+    let engine = unsafe { &*engine };
+    let snapshot = engine.user_db.get_entries_snapshot(limit);
+    let json = serde_json::to_string(&snapshot)
+        .unwrap_or_else(|_| "{\"unigrams\":[],\"bigrams\":[]}".to_string());
+    CString::new(json).unwrap_or_default().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn smart_ime_delete_learned_unigram(
+    engine: *mut DualPathDecoder,
+    word: *const c_char,
+) -> bool {
+    if engine.is_null() || word.is_null() {
+        return false;
+    }
+    let engine = unsafe { &mut *engine };
+    let Ok(word_str) = unsafe { CStr::from_ptr(word) }.to_str() else {
+        return false;
+    };
+    engine.user_db.delete_unigram(word_str).unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn smart_ime_delete_learned_bigram(
+    engine: *mut DualPathDecoder,
+    prev_word: *const c_char,
+    next_word: *const c_char,
+) -> bool {
+    if engine.is_null() || prev_word.is_null() || next_word.is_null() {
+        return false;
+    }
+    let engine = unsafe { &mut *engine };
+    let (Ok(prev_str), Ok(next_str)) = (
+        unsafe { CStr::from_ptr(prev_word) }.to_str(),
+        unsafe { CStr::from_ptr(next_word) }.to_str(),
+    ) else {
+        return false;
+    };
+    engine
+        .user_db
+        .delete_bigram(prev_str, next_str)
+        .unwrap_or(false)
+}
+
+#[no_mangle]
 pub extern "C" fn smart_ime_clear_learning_db(engine: *mut DualPathDecoder) -> bool {
     if engine.is_null() {
         return false;

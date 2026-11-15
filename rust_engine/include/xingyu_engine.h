@@ -34,6 +34,9 @@ bool smart_ime_load_custom_dict(SmartEngineHandle engine, const char* path);
 bool smart_ime_init_user_db(SmartEngineHandle engine, const char* path);
 
 void smart_ime_get_learning_stats(SmartEngineHandle engine, size_t* out_unigrams, size_t* out_bigrams);
+const char* smart_ime_get_learning_entries_json(SmartEngineHandle engine, size_t limit);
+bool smart_ime_delete_learned_unigram(SmartEngineHandle engine, const char* word);
+bool smart_ime_delete_learned_bigram(SmartEngineHandle engine, const char* prev_word, const char* next_word);
 bool smart_ime_clear_learning_db(SmartEngineHandle engine);
 
 void smart_ime_free_string(char* s);

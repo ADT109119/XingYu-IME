@@ -1,36 +1,65 @@
 import SwiftUI
 import AppKit
 
-public struct SettingsView: View {
-    @ObservedObject var settingsModel: SettingsModel
+public enum SettingsTab: Hashable {
+    case general
+    case customDict
+    case learning
+    case about
+}
 
-    public init(settingsModel: SettingsModel) {
+public struct SettingsView: View {
+    private enum LearningScope: String, CaseIterable, Identifiable {
+        case unigrams = "單詞記憶"
+        case bigrams = "詞彙搭配"
+        var id: String { rawValue }
+    }
+
+    private enum LearningSortOrder: String, CaseIterable, Identifiable {
+        case recent = "最近使用"
+        case frequency = "最常使用"
+        var id: String { rawValue }
+    }
+
+    @ObservedObject var settingsModel: SettingsModel
+    @State private var selectedTab: SettingsTab
+    @State private var learningScope: LearningScope = .unigrams
+    @State private var learningSort: LearningSortOrder = .recent
+    @State private var learningSearch: String = ""
+    @State private var showClearConfirm: Bool = false
+
+    public init(settingsModel: SettingsModel, initialTab: SettingsTab = .general) {
         self.settingsModel = settingsModel
+        _selectedTab = State(initialValue: initialTab)
     }
 
     public var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             generalTab
+                .tag(SettingsTab.general)
                 .tabItem {
                     Label("一般設定", systemImage: "gearshape")
                 }
 
             customDictTab
+                .tag(SettingsTab.customDict)
                 .tabItem {
                     Label("自訂辭典", systemImage: "character.book.closed")
                 }
 
             learningTab
+                .tag(SettingsTab.learning)
                 .tabItem {
                     Label("詞袋學習", systemImage: "brain.head.profile")
                 }
 
             aboutTab
+                .tag(SettingsTab.about)
                 .tabItem {
                     Label("關於行魚", systemImage: "info.circle")
                 }
         }
-        .frame(width: 540, height: 440)
+        .frame(width: 580, height: 500)
         .padding()
     }
 
@@ -132,57 +161,326 @@ public struct SettingsView: View {
     }
 
     // MARK: - 3. 詞袋學習設定
-    private var learningTab: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("自適應學習資料庫 (SQLite)")
-                .font(.headline)
+    private var filteredUnigrams: [LearnedUnigramItem] {
+        let query = learningSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered = query.isEmpty
+            ? settingsModel.learnedUnigrams
+            : settingsModel.learnedUnigrams.filter { $0.word.localizedCaseInsensitiveContains(query) }
+        return sortLearningItems(filtered, count: \.count, lastUsed: \.last_used)
+    }
 
-            Text("行魚輸入法會在使用過程中，逐步記錄您的常用字詞與前後搭配習慣，越用越聰明。")
+    private var filteredBigrams: [LearnedBigramItem] {
+        let query = learningSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered = query.isEmpty
+            ? settingsModel.learnedBigrams
+            : settingsModel.learnedBigrams.filter {
+                $0.prev_word.localizedCaseInsensitiveContains(query)
+                    || $0.next_word.localizedCaseInsensitiveContains(query)
+                    || "\($0.prev_word)\($0.next_word)".localizedCaseInsensitiveContains(query)
+            }
+        return sortLearningItems(filtered, count: \.count, lastUsed: \.last_used)
+    }
+
+    private func sortLearningItems<T>(
+        _ items: [T],
+        count: KeyPath<T, Int>,
+        lastUsed: KeyPath<T, Int64>
+    ) -> [T] {
+        items.sorted { lhs, rhs in
+            switch learningSort {
+            case .recent:
+                if lhs[keyPath: lastUsed] != rhs[keyPath: lastUsed] {
+                    return lhs[keyPath: lastUsed] > rhs[keyPath: lastUsed]
+                }
+                return lhs[keyPath: count] > rhs[keyPath: count]
+            case .frequency:
+                if lhs[keyPath: count] != rhs[keyPath: count] {
+                    return lhs[keyPath: count] > rhs[keyPath: count]
+                }
+                return lhs[keyPath: lastUsed] > rhs[keyPath: lastUsed]
+            }
+        }
+    }
+
+    private func formatLearnedTimestamp(_ unixSeconds: Int64) -> String {
+        guard unixSeconds > 0 else { return "—" }
+        let date = Date(timeIntervalSince1970: TimeInterval(unixSeconds))
+        return date.formatted(.relative(presentation: .named))
+    }
+
+    @ViewBuilder
+    private func learningStatCard(
+        title: String,
+        valueText: String,
+        systemImage: String,
+        scope: LearningScope
+    ) -> some View {
+        let isSelected = learningScope == scope
+        Button {
+            learningScope = scope
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.title3)
+                    .foregroundColor(isSelected ? .accentColor : .secondary)
+                    .frame(width: 24)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(valueText)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(isSelected ? Color.accentColor.opacity(0.10) : Color.secondary.opacity(0.07))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.12), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func learningRowTrailing(
+        count: Int,
+        lastUsed: Int64,
+        onDelete: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text("\(count) 次")
+                .font(.caption.monospacedDigit())
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Color.accentColor.opacity(0.12))
+                .foregroundColor(.accentColor)
+                .cornerRadius(5)
+
+            Text(formatLearnedTimestamp(lastUsed))
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .frame(minWidth: 68, alignment: .trailing)
 
-            HStack(spacing: 20) {
-                VStack(alignment: .leading) {
-                    Text("單詞使用記憶 (Unigrams)")
-                        .font(.caption).foregroundColor(.secondary)
-                    Text("\(settingsModel.unigramCount) 個詞彙")
-                        .font(.title2).bold()
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(Color.secondary.opacity(0.08))
-                .cornerRadius(10)
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("刪除此學習紀錄")
+        }
+    }
 
-                VStack(alignment: .leading) {
-                    Text("詞彙二元搭配 (Bigrams)")
-                        .font(.caption).foregroundColor(.secondary)
-                    Text("\(settingsModel.bigramCount) 種搭配")
-                        .font(.title2).bold()
+    @ViewBuilder
+    private func learningEmptyState(isFiltering: Bool) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: isFiltering ? "magnifyingglass" : "tray")
+                .font(.title2)
+                .foregroundColor(.secondary)
+            Text(isFiltering ? "找不到符合「\(learningSearch)」的學習紀錄" : "目前尚未累積此類學習詞彙")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            if !isFiltering {
+                Text("平時切換行魚輸入法選字輸出後，會自動記錄於此。")
+                    .font(.caption)
+                    .foregroundColor(.secondary.opacity(0.8))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
+    private var learningTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("自適應詞袋學習 (SQLite)")
+                        .font(.headline)
+                    Text("越常選用的字詞與搭配會自動加權；可搜尋並刪除誤打或不想要的記憶。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(Color.secondary.opacity(0.08))
-                .cornerRadius(10)
+                Spacer()
+                Button {
+                    settingsModel.refreshStats()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("重新讀取學習資料庫")
             }
 
-            Spacer()
+            HStack(spacing: 10) {
+                learningStatCard(
+                    title: "單詞使用記憶",
+                    valueText: "\(settingsModel.unigramCount) 個詞彙",
+                    systemImage: "textformat.abc",
+                    scope: .unigrams
+                )
+                learningStatCard(
+                    title: "詞彙二元搭配",
+                    valueText: "\(settingsModel.bigramCount) 種搭配",
+                    systemImage: "arrow.left.arrow.right",
+                    scope: .bigrams
+                )
+            }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("重設學習記憶")
-                    .font(.subheadline).bold()
-                Text("若輸入法記憶了不想要的錯字或頻率異常，您可以隨時重設學習資料庫。")
-                    .font(.caption).foregroundColor(.secondary)
-
-                Button(role: .destructive) {
-                    settingsModel.clearLearningDb()
-                } label: {
-                    Text("清除所有學習記憶並重設")
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                        .font(.caption)
+                    TextField("搜尋已學習的詞彙...", text: $learningSearch)
+                        .textFieldStyle(.plain)
+                        .font(.subheadline)
+                    if !learningSearch.isEmpty {
+                        Button {
+                            learningSearch = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.08))
+                .cornerRadius(7)
+
+                Picker("排序", selection: $learningSort) {
+                    ForEach(LearningSortOrder.allCases) { order in
+                        Text(order.rawValue).tag(order)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 105)
+            }
+
+            let isFiltering = !learningSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            Group {
+                switch learningScope {
+                case .unigrams:
+                    let items = filteredUnigrams
+                    if items.isEmpty {
+                        learningEmptyState(isFiltering: isFiltering)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                                    HStack(spacing: 8) {
+                                        Text(item.word)
+                                            .font(.system(size: 13.5, weight: .medium))
+                                            .lineLimit(1)
+                                        Spacer()
+                                        learningRowTrailing(count: item.count, lastUsed: item.last_used) {
+                                            settingsModel.deleteUnigram(item.word)
+                                        }
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+
+                                    if index < items.count - 1 {
+                                        Divider().padding(.leading, 12)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                case .bigrams:
+                    let items = filteredBigrams
+                    if items.isEmpty {
+                        learningEmptyState(isFiltering: isFiltering)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                                    HStack(spacing: 6) {
+                                        Text(item.prev_word)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .padding(.horizontal, 7)
+                                            .padding(.vertical, 2)
+                                            .background(Color.secondary.opacity(0.10))
+                                            .cornerRadius(5)
+
+                                        Image(systemName: "arrow.right")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+
+                                        Text(item.next_word)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .padding(.horizontal, 7)
+                                            .padding(.vertical, 2)
+                                            .background(Color.secondary.opacity(0.10))
+                                            .cornerRadius(5)
+
+                                        Spacer()
+
+                                        learningRowTrailing(count: item.count, lastUsed: item.last_used) {
+                                            settingsModel.deleteBigram(prevWord: item.prev_word, nextWord: item.next_word)
+                                        }
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+
+                                    if index < items.count - 1 {
+                                        Divider().padding(.leading, 12)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+            .cornerRadius(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+            )
+
+            HStack {
+                Text(
+                    learningScope == .unigrams
+                        ? "提示：刪除單詞會一併移除包含該詞的搭配紀錄（最多顯示 500 筆）。"
+                        : "提示：刪除搭配只會移除前後詞關聯，保留原本單詞權重（最多顯示 500 筆）。"
+                )
+                .font(.caption2)
+                .foregroundColor(.secondary)
+
+                Spacer()
+
+                Button("重設全部...", role: .destructive) {
+                    showClearConfirm = true
+                }
+                .controlSize(.small)
+                .disabled(settingsModel.unigramCount == 0 && settingsModel.bigramCount == 0)
             }
         }
         .padding()
         .onAppear {
             settingsModel.refreshStats()
+        }
+        .alert("確定要清除所有學習記憶嗎？", isPresented: $showClearConfirm) {
+            Button("取消", role: .cancel) {}
+            Button("清除全部", role: .destructive) {
+                settingsModel.clearLearningDb()
+            }
+        } message: {
+            Text("此操作會清空目前累積的 \(settingsModel.unigramCount) 個單詞與 \(settingsModel.bigramCount) 種搭配記憶，無法復原。")
         }
     }
 

@@ -165,6 +165,31 @@ mod tests {
     }
 
     #[test]
+    fn test_list_and_delete_learned_entries() {
+        let db = UserAdaptiveDb::in_memory().unwrap();
+        db.record_commit(&["行魚", "輸入法"]);
+        db.record_commit(&["行魚", "好用"]);
+
+        let snap = db.get_entries_snapshot(50);
+        assert_eq!(snap.unigrams.len(), 3);
+        assert_eq!(snap.bigrams.len(), 2);
+        assert_eq!(snap.unigrams.iter().find(|u| u.word == "行魚").map(|u| u.count), Some(2));
+
+        // 刪除特定 bigram 不影響單詞記憶
+        assert!(db.delete_bigram("行魚", "好用").unwrap());
+        let snap_after_bigram = db.get_entries_snapshot(50);
+        assert_eq!(snap_after_bigram.bigrams.len(), 1);
+        assert_eq!(snap_after_bigram.unigrams.len(), 3);
+
+        // 刪除單詞時一併清理關聯的 bigram
+        assert!(db.delete_unigram("行魚").unwrap());
+        let snap_after_unigram = db.get_entries_snapshot(50);
+        assert_eq!(snap_after_unigram.bigrams.len(), 0);
+        assert_eq!(snap_after_unigram.unigrams.len(), 2);
+        assert!(snap_after_unigram.unigrams.iter().all(|u| u.word != "行魚"));
+    }
+
+    #[test]
     fn test_continuous_sentence_and_three_char_words() {
         // 1. 連續整句輸入免停頓選字：我今天很好 (ji3rupwu0cp3cl3)
         let mut d1 = DualPathDecoder::new();

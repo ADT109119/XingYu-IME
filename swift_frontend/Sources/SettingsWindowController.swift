@@ -8,7 +8,7 @@ public class SettingsWindowController: NSWindowController {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 440),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 500),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -23,10 +23,10 @@ public class SettingsWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    public func show(engine: SmartEngine?, customDictPath: String) {
+    public func show(engine: SmartEngine?, customDictPath: String, tab: SettingsTab = .general) {
         let model = SettingsModel(engine: engine, customDictPath: customDictPath)
         self.currentModel = model
-        let view = SettingsView(settingsModel: model)
+        let view = SettingsView(settingsModel: model, initialTab: tab)
         self.window?.contentView = NSHostingView(rootView: view)
 
         NSApp.activate(ignoringOtherApps: true)
