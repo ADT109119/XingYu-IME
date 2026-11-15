@@ -1,0 +1,29 @@
+# Build outputs
+/build/
+/rust_engine/target/
+*.dSYM/
+
+# Rust / Cargo
+Cargo.lock
+**/*.rs.bk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+# Xcode / Swift / IDE
+*.xcuserstate
+*.xcuserdatad/
+.swiftpm/
+.build/
+.vscode/
+.idea/
+
+# Runtime / Local User Data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.log
