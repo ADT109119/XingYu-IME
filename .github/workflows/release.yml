@@ -1,0 +1,189 @@
+name: Release XingYu IME
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without leading v (e.g. 1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Universal macOS App & Publish Release
+    runs-on: macos-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+      archive_name: ${{ steps.package.outputs.archive_name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            VERSION="${VERSION#v}"
+            TAG="v${VERSION}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain (arm64 + x86_64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_engine
+
+      - name: Run Rust unit tests
+        run: cargo test --manifest-path rust_engine/Cargo.toml
+
+      - name: Build Universal Binary & Package Zip
+        id: package
+        env:
+          APP_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          chmod +x scripts/build.sh scripts/package.sh
+          ./scripts/package.sh --universal
+          ARCHIVE_NAME="XingYuIME-${APP_VERSION}-universal.zip"
+          SHA256="$(awk '{print $1}' "build/${ARCHIVE_NAME}.sha256")"
+          echo "archive_name=${ARCHIVE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+          lipo -info build/XingYuIME.app/Contents/MacOS/XingYuIME
+
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          cat << 'EOF' > build/RELEASE_NOTES.md
+          ## 行魚輸入法 (XingYu IME) ${{ steps.meta.outputs.tag }}
+
+          支援 **Apple Silicon (arm64)** 與 **Intel (x86_64)** 的 Universal Binary（需要 macOS 13.0 Ventura 或更新版本）。
+
+          ### 方式一：透過 Homebrew 安裝（推薦）
+
+          ```bash
+          brew install --cask ADT109119/tap/xingyu-ime
+          ```
+
+          升級既有版本：
+
+          ```bash
+          brew upgrade --cask xingyu-ime
+          ```
+
+          ### 方式二：手動下載 Zip 安裝
+
+          1. 下載下方附件 `${{ steps.package.outputs.archive_name }}` 並解壓縮得到 `XingYuIME.app`。
+          2. 由於本軟體採用 Ad-hoc 簽章（無 Apple Developer ID 公證），請在終端機執行以下指令安裝並清除隔離屬性：
+
+          ```bash
+          mkdir -p "$HOME/Library/Input Methods"
+          killall XingYuIME 2>/dev/null || true
+          rm -rf "$HOME/Library/Input Methods/XingYuIME.app"
+          cp -R ~/Downloads/XingYuIME.app "$HOME/Library/Input Methods/XingYuIME.app"
+          xattr -cr "$HOME/Library/Input Methods/XingYuIME.app"
+          killall TextInputMenuAgent TextInputSwitcher 2>/dev/null || true
+          ```
+
+          3. 前往 **系統設定 → 鍵盤 → 文字輸入「編輯」→「+」→「繁體中文」** 加入「**行魚輸入法**」。
+
+          ### Checksum (SHA-256)
+          `${{ steps.package.outputs.sha256 }}`
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: XingYu IME ${{ steps.meta.outputs.tag }}
+          body_path: build/RELEASE_NOTES.md
+          files: |
+            build/${{ steps.package.outputs.archive_name }}
+            build/${{ steps.package.outputs.archive_name }}.sha256
+
+      - name: Upload artifact for Homebrew tap job
+        uses: actions/upload-artifact@v4
+        with:
+          name: cask-template
+          path: packaging/homebrew/Casks/xingyu-ime.rb
+
+  update-homebrew-tap:
+    name: Update ADT109119/homebrew-tap
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if HOMEBREW_TAP_TOKEN is configured
+        id: check
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "$TAP_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "HOMEBREW_TAP_TOKEN is not set; skipping Homebrew tap update."
+          fi
+
+      - name: Download Cask template
+        if: steps.check.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: cask-template
+
+      - name: Checkout ADT109119/homebrew-tap
+        if: steps.check.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ADT109119/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update Cask version and sha256
+        if: steps.check.outputs.enabled == 'true'
+        env:
+          NEW_VERSION: ${{ needs.build-and-release.outputs.version }}
+          NEW_SHA256: ${{ needs.build-and-release.outputs.sha256 }}
+        run: |
+          mkdir -p homebrew-tap/Casks
+          python3 - << 'PY'
+          import os, re
+          with open("xingyu-ime.rb", "r", encoding="utf-8") as f:
+              content = f.read()
+          content = re.sub(r'^(\s*version\s+)"[^"]+"', rf'\1"{os.environ["NEW_VERSION"]}"', content, flags=re.MULTILINE)
+          content = re.sub(r'^(\s*sha256\s+)"[^"]+"', rf'\1"{os.environ["NEW_SHA256"]}"', content, flags=re.MULTILINE)
+          with open("homebrew-tap/Casks/xingyu-ime.rb", "w", encoding="utf-8") as f:
+              f.write(content)
+          PY
+
+      - name: Commit and push updated Cask
+        if: steps.check.outputs.enabled == 'true'
+        working-directory: homebrew-tap
+        env:
+          NEW_VERSION: ${{ needs.build-and-release.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/xingyu-ime.rb
+          if git diff --cached --quiet; then
+            echo "No changes to Casks/xingyu-ime.rb"
+            exit 0
+          fi
+          git commit -m "Update xingyu-ime to ${NEW_VERSION}"
+          git push

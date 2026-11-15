@@ -91,18 +91,46 @@ graph TB
 
 ## 三、 快速安裝與啟用 (Installation)
 
-### 系統需求
+### 方式一：透過 Homebrew 安裝（推薦，免自行編譯）
+
+支援 macOS 13.0 (Ventura) 以上之 Apple Silicon 與 Intel Mac：
+
+```bash
+brew install --cask ADT109119/tap/xingyu-ime
+```
+
+升級版本：
+
+```bash
+brew upgrade --cask xingyu-ime
+```
+
+### 方式二：從 GitHub Releases 下載預編譯檔
+
+1. 前往 [Releases 頁面](https://github.com/ADT109119/XingYu-IME/releases) 下載最新的 `XingYuIME-*-universal.zip` 並解壓縮得到 `XingYuIME.app`。
+2. 因專案採用 Ad-hoc 簽章，請在終端機複製至輸入法目錄並清除隔離標記：
+
+```bash
+mkdir -p "$HOME/Library/Input Methods"
+killall XingYuIME 2>/dev/null || true
+rm -rf "$HOME/Library/Input Methods/XingYuIME.app"
+cp -R ~/Downloads/XingYuIME.app "$HOME/Library/Input Methods/XingYuIME.app"
+xattr -cr "$HOME/Library/Input Methods/XingYuIME.app"
+killall TextInputMenuAgent TextInputSwitcher 2>/dev/null || true
+```
+
+### 方式三：從原始碼一鍵編譯與安裝
+
+#### 系統需求
 
 - **macOS 13.0 (Ventura)** 或更新版本
 - **Rust Toolchain** (`rustc`、`cargo`)
 - **Xcode Command Line Tools** (`swiftc`、`codesign`)
 - **Python 3**（供安裝腳本寫入 `com.apple.HIToolbox.plist` 啟用紀錄）
 
-### 一鍵編譯與安裝
-
 ```bash
-git clone https://github.com/<your-username>/XingYuIME.git
-cd XingYuIME
+git clone https://github.com/ADT109119/XingYu-IME.git
+cd XingYu-IME
 
 # 編譯 Rust 靜態庫與 Swift .app，並自動安裝至 ~/Library/Input Methods/
 chmod +x scripts/build.sh scripts/install.sh
@@ -189,8 +217,13 @@ IME/
 │   ├── Resources/              # Info.plist、AppIcon.icns、XingYuTemplate.tiff (選單列 Template 圖示) 與 *.lproj
 │   └── Sources/                # InputController、CandidateWindow、SettingsView 等
 ├── scripts/
-│   ├── build.sh                # 建置 Release 版並打包簽章 build/XingYuIME.app
-│   └── install.sh              # 安裝至 ~/Library/Input Methods 並註冊 TIS 輸入來源
+│   ├── build.sh                # 建置 Release 版並打包簽章 build/XingYuIME.app（支援 --universal）
+│   ├── install.sh              # 安裝至 ~/Library/Input Methods 並註冊 TIS 輸入來源
+│   └── package.sh              # 打包 Universal Binary .zip 與 SHA-256 校驗檔
+├── packaging/
+│   └── homebrew/Casks/xingyu-ime.rb  # Homebrew Tap Cask 範本
+├── .github/workflows/
+│   └── release.yml             # 推送 v* tag 自動建置並發布 GitHub Release
 ├── CONTRIBUTING.md             # 開發與貢獻指南
 ├── LICENSE                     # MIT License
 └── .gitignore
