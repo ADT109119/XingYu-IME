@@ -222,20 +222,28 @@ mod tests {
         }
         assert_eq!(decoder.get_preedit_string(), "我今天");
 
-        // 向左移動游標選詞 -> 鎖定 "今天"，再向左移動 -> 鎖定 "我"
+        // 向左移動游標逐字前進：結尾 -> 第2字("天") -> 第1字("今") -> 第0字("我")
         assert!(decoder.move_cursor_left());
         let snap1 = decoder.get_composition_snapshot(9);
-        assert_eq!(snap1.cursor_utf16, 1); // "今天" 起始位置
-        assert_eq!(snap1.selection_len_utf16, 2);
+        assert_eq!(snap1.cursor_utf16, 2); // "我今|天"
+        assert_eq!(snap1.selection_len_utf16, 0);
+        assert_eq!(snap1.target_start_utf16, 2);
 
         assert!(decoder.move_cursor_left());
         let snap2 = decoder.get_composition_snapshot(9);
-        assert_eq!(snap2.cursor_utf16, 0); // "我" 起始位置
-        assert_eq!(snap2.selection_len_utf16, 1);
-        assert!(snap2.candidates.len() >= 2);
+        assert_eq!(snap2.cursor_utf16, 1); // "我|今天"
+        assert_eq!(snap2.selection_len_utf16, 0);
+        assert_eq!(snap2.target_start_utf16, 1);
 
-        // 重選第 2 候選字替換 "我"（例如 "偶" 或同音字）
-        let chosen = snap2.candidates[1].text.clone();
+        assert!(decoder.move_cursor_left());
+        let snap3 = decoder.get_composition_snapshot(9);
+        assert_eq!(snap3.cursor_utf16, 0); // "|我今天"
+        assert_eq!(snap3.selection_len_utf16, 0);
+        assert_eq!(snap3.target_start_utf16, 0);
+        assert!(snap3.candidates.len() >= 2);
+
+        // 重選第 2 候選字替換 "我"
+        let chosen = snap3.candidates[1].text.clone();
         decoder.apply_candidate_selection(1);
         assert_eq!(decoder.get_preedit_string(), format!("{}今天", chosen));
     }
@@ -503,5 +511,189 @@ mod tests {
             .expect("住 should still be available for reselection");
         dec.apply_candidate_selection(zhu_live_idx);
         assert_eq!(dec.get_composition_snapshot(10).preedit, "住");
+    }
+
+    #[test]
+    fn test_preedit_caret_backspace_forward_delete_and_mid_insertion() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 輸入 "我今天"
+        for ch in "ji3rupwu0".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "我今天");
+
+        // 向左移一字到 "我今|天"，按 Backspace 應直接刪除整個已轉換的「今」字
+        assert!(dec.move_cursor_left());
+        assert_eq!(dec.get_composition_snapshot(9).cursor_utf16, 2);
+        assert!(dec.pop_char().is_some());
+        assert_eq!(dec.get_preedit_string(), "我天");
+        assert_eq!(dec.get_composition_snapshot(9).cursor_utf16, 1);
+
+        // 在 "我|天" 中間輸入注音 "1u4" -> "必" (含數字鍵 1 與 4)，若半音節時按 Backspace 應先刪未組完按鍵
+        dec.push_char('1');
+        dec.push_char('8');
+        let mid_snap = dec.get_composition_snapshot(9);
+        assert_eq!(mid_snap.preedit, "我18天");
+        assert_eq!(mid_snap.cursor_utf16, 3);
+        assert_eq!(mid_snap.selection_len_utf16, 0);
+        assert_eq!(dec.pop_char(), Some('8')); // 刪掉 '8'，剩 "1"
+        assert_eq!(dec.get_composition_snapshot(9).preedit, "我1天");
+        dec.push_char('j');
+        dec.push_char('4'); // 完成 "ㄅㄨˋ" -> "不"
+        assert_eq!(dec.get_preedit_string(), "我不天");
+
+        // 此時游標位於 "我不|天"，按 Forward Delete 應刪除游標右側的「天」字
+        assert!(dec.delete_forward());
+        assert_eq!(dec.get_preedit_string(), "我不");
+
+        // 游標右移/左移檢查邊界
+        assert!(!dec.move_cursor_right());
+        assert!(dec.move_cursor_left());
+        assert_eq!(dec.get_composition_snapshot(9).cursor_utf16, 1);
+        assert!(dec.move_cursor_right());
+        assert_eq!(dec.get_composition_snapshot(9).cursor_utf16, 2);
+    }
+
+    #[test]
+    fn test_reading_isolated_learning_you4_and_yu4() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 1. 模擬舊版未區分讀音的學習紀錄污染，並頻繁上屏「有」(ㄧㄡˇ) 與「與」(ㄩˇ)
+        for _ in 0..10 {
+            dec.user_db.record_commit(&["有"]);
+            dec.user_db.record_commit(&["與"]);
+            dec.user_db.record_commit_with_readings(None, &[("ㄧㄡˇ", "有")]);
+            dec.user_db.record_commit_with_readings(None, &[("ㄩˇ", "與")]);
+        }
+
+        // 2. 輸入 u.4 (ㄧㄡˋ)：「有」絕不應因 ㄧㄡˇ 學習而出現於第一頁（或排第一），首選應為「又」
+        dec.clear();
+        for ch in "u.4".chars() {
+            dec.push_char(ch);
+        }
+        let snap_you4 = dec.get_composition_snapshot(20);
+        assert_eq!(snap_you4.preedit, "又");
+        let page1_you4: Vec<&str> = snap_you4
+            .candidates
+            .iter()
+            .take(9)
+            .map(|c| c.text.as_str())
+            .collect();
+        assert!(
+            !page1_you4.contains(&"有"),
+            "u.4 page 1 should not contain '有', got {:?}",
+            page1_you4
+        );
+
+        // 3. 輸入 m4 (ㄩˋ)：「與」絕不應因 ㄩˇ 學習而出現於第一頁（或排第一），首選應為「育」
+        dec.clear();
+        for ch in "m4".chars() {
+            dec.push_char(ch);
+        }
+        let snap_yu4 = dec.get_composition_snapshot(20);
+        assert_eq!(snap_yu4.preedit, "育");
+        let page1_yu4: Vec<&str> = snap_yu4
+            .candidates
+            .iter()
+            .take(9)
+            .map(|c| c.text.as_str())
+            .collect();
+        assert!(
+            !page1_yu4.contains(&"與"),
+            "m4 page 1 should not contain '與', got {:?}",
+            page1_yu4
+        );
+
+        // 4. 在 u.4 主動學習「右」後，只應影響 u.4，不應干擾 u.3 (ㄧㄡˇ)
+        dec.clear();
+        for ch in "u.4".chars() {
+            dec.push_char(ch);
+        }
+        let right_idx = dec
+            .get_composition_snapshot(20)
+            .candidates
+            .iter()
+            .position(|c| c.text == "右")
+            .expect("expected '右' in u.4");
+        dec.apply_candidate_selection(right_idx);
+        dec.commit_text("右");
+
+        dec.clear();
+        for ch in "u.4".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "右");
+
+        dec.clear();
+        for ch in "u.3".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "有");
+    }
+
+    #[test]
+    fn test_phrase_preservation_and_taiwan_variants() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 大量學習高頻單字，驗證不會反過來把多字詞拆成單字
+        for (zy, w) in [
+            ("ㄧ", "一"),
+            ("ㄍㄜˋ", "個"),
+            ("ㄉㄜ˙", "的"),
+            ("ㄕˋ", "是"),
+            ("ㄗㄞˋ", "在"),
+            ("ㄆㄞˊ", "排"),
+            ("ㄗㄠˇ", "早"),
+        ] {
+            for _ in 0..20 {
+                dec.user_db.record_commit_with_readings(None, &[(zy, w)]);
+            }
+        }
+
+        for (keys, expected) in [
+            ("u ek4", "一個"),
+            ("u6ek4", "一個"),
+            ("1j4g4", "不是"),
+            ("1j6g4", "不是"),
+            ("5k4ek4", "這個"),
+            ("5k4ek7", "這個"),
+            ("2u4u ek4", "第一個"),
+            ("q96y942u4u ek4", "排在第一個"),
+            ("vu3yl3", "洗澡"),
+            ("yl3y94", "早在"),
+            ("y42j/4vm03y4", "自動選字"),
+            ("z06wu35j/ jp6", "繁體中文"),
+            ("t;6ru04h6", "常見詞"),
+            ("y04hjp6fm ", "暫存區"),
+            ("ao6ej0 vu ", "沒關係"),
+            ("u/3qu0 ", "影片"),
+            ("vu84y94", "下載"),
+            ("gp6ak ", "什麼"),
+            ("ji3ap ", "我們"),
+            ("xu03gj ", "臉書"),
+            ("g60 ", "食安"),
+            ("wu6el4", "提告"),
+            ("ru0454", "建置"),
+            ("qu0 vu; ", "偏鄉"),
+            ("ru, u.3", "街友"),
+            ("dk4e; ", "課綱"),
+            ("cjo4d0 ", "會勘"),
+        ] {
+            dec.clear();
+            for ch in keys.chars() {
+                dec.push_char(ch);
+            }
+            assert_eq!(
+                dec.get_preedit_string(),
+                expected,
+                "failed decoding '{}' -> got '{}'",
+                keys,
+                dec.get_preedit_string()
+            );
+        }
     }
 }

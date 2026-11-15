@@ -33,6 +33,15 @@ pub extern "C" fn smart_ime_pop_char(engine: *mut DualPathDecoder) -> bool {
 }
 
 #[no_mangle]
+pub extern "C" fn smart_ime_delete_forward(engine: *mut DualPathDecoder) -> bool {
+    if engine.is_null() {
+        return false;
+    }
+    let engine = unsafe { &mut *engine };
+    engine.delete_forward()
+}
+
+#[no_mangle]
 pub extern "C" fn smart_ime_clear(engine: *mut DualPathDecoder) {
     let engine = unsafe { &mut *engine };
     engine.clear();

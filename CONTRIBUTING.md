@@ -17,7 +17,7 @@ IME/
 ├── rust_engine/                # 核心輸入法推論與斷詞引擎 (Rust Staticlib + C-ABI)
 │   ├── Cargo.toml
 │   ├── data/
-│   │   └── lexicon.txt         # 內建繁體中文注音詞庫（172,592 筆詞條）
+│   │   └── lexicon.txt         # 內建繁體中文注音詞庫（189,654 筆詞條）
 │   └── src/
 │       ├── lib.rs              # 核心 Engine 控制狀態機、緩衝區管理、多音節切換與整合測試
 │       ├── engine/

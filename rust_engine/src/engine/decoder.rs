@@ -35,6 +35,10 @@ pub struct CompositionSnapshot {
     pub preedit: String,
     pub cursor_utf16: usize,
     pub selection_len_utf16: usize,
+    #[serde(default)]
+    pub target_start_utf16: usize,
+    #[serde(default)]
+    pub target_len_utf16: usize,
     pub is_valid_zhuyin: bool,
     pub has_uppercase: bool,
     pub has_resolved_chinese: bool,
@@ -125,7 +129,15 @@ struct DecodedSegment {
     start_syl: usize,
     end_syl: usize,
     word: String,
-    _zhuyin: String,
+    zhuyin: String,
+}
+
+struct SentenceDecodeResult {
+    segments: Vec<DecodedSegment>,
+    syllables: Vec<SyllableBucket>,
+    resolved_len: usize,
+    cursor_syl_idx: Option<usize>,
+    is_valid: bool,
 }
 
 fn can_initial_stand_alone(sym: ZhuyinSymbol) -> bool {
@@ -153,8 +165,10 @@ pub struct DualPathDecoder {
     last_committed_word: Option<String>,
     /// 使用者於目前組字句中手動鎖定的詞組區段: (start_syl, end_syl, word)
     user_overrides: Vec<(usize, usize, String)>,
-    /// 選詞 / 重選時的活躍音節索引
-    active_cursor_syl: Option<usize>,
+    /// 暫存區編輯游標（UTF-8 byte 偏移量；None 表示位於緩衝區末尾）
+    cursor_byte: Option<usize>,
+    /// 是否正在句中游標處鍵入尚未閉合的注音音節
+    is_editing_mid_syllable: bool,
 }
 
 impl DualPathDecoder {
@@ -168,7 +182,8 @@ impl DualPathDecoder {
             raw_buffer: String::new(),
             last_committed_word: None,
             user_overrides: Vec::new(),
-            active_cursor_syl: None,
+            cursor_byte: None,
+            is_editing_mid_syllable: false,
         }
     }
 
@@ -181,7 +196,8 @@ impl DualPathDecoder {
     pub fn clear(&mut self) {
         self.raw_buffer.clear();
         self.user_overrides.clear();
-        self.active_cursor_syl = None;
+        self.cursor_byte = None;
+        self.is_editing_mid_syllable = false;
     }
 
     /// 取得目前 raw 輸入緩衝區
@@ -189,17 +205,115 @@ impl DualPathDecoder {
         &self.raw_buffer
     }
 
-    /// 輸入一個按鍵字元
+    /// 輸入一個按鍵字元（支援句中游標位置插入）
     pub fn push_char(&mut self, ch: char) {
-        self.raw_buffer.push(ch);
-        self.active_cursor_syl = None;
+        if let Some(b) = self.cursor_byte {
+            let b = b.min(self.raw_buffer.len());
+            let (old_p_syls, _) = self.parse_zhuyin_segments(&self.raw_buffer[..b]);
+            let old_p_len = old_p_syls.len();
+
+            self.raw_buffer.insert(b, ch);
+            let new_b = b + ch.len_utf8();
+            let (new_p_syls, _) = self.parse_zhuyin_segments(&self.raw_buffer[..new_b]);
+            let new_p_len = new_p_syls.len();
+
+            if new_p_len > old_p_len {
+                let delta = new_p_len - old_p_len;
+                for (s, e, _) in &mut self.user_overrides {
+                    if *s >= old_p_len {
+                        *s += delta;
+                        *e += delta;
+                    } else if *e > old_p_len {
+                        *e += delta;
+                    }
+                }
+            }
+
+            let finished_with_tone = matches!(self.layout.map_key(ch), KeyMapping::Tone(_))
+                && new_p_syls.last().map_or(false, |s| s.has_explicit_tone);
+            self.is_editing_mid_syllable = !finished_with_tone;
+            self.cursor_byte = if new_b >= self.raw_buffer.len() {
+                self.is_editing_mid_syllable = false;
+                None
+            } else {
+                Some(new_b)
+            };
+        } else {
+            self.raw_buffer.push(ch);
+            self.is_editing_mid_syllable = false;
+        }
         let _ = self.custom_dict.reload_if_needed();
     }
 
-    /// 刪除最後一個按鍵（Backspace）
+    fn delete_syllable_range(&mut self, del_idx: usize, byte_start: usize, byte_end: usize) {
+        if byte_start >= byte_end || byte_end > self.raw_buffer.len() {
+            return;
+        }
+        self.raw_buffer.drain(byte_start..byte_end);
+        self.user_overrides.retain_mut(|(s, e, _)| {
+            if *e <= del_idx {
+                true
+            } else if *s > del_idx {
+                *s -= 1;
+                *e -= 1;
+                true
+            } else {
+                false
+            }
+        });
+        self.is_editing_mid_syllable = false;
+        self.cursor_byte = if self.raw_buffer.is_empty() || byte_start >= self.raw_buffer.len() {
+            None
+        } else {
+            Some(byte_start)
+        };
+    }
+
+    /// 刪除游標左側按鍵或已轉換的整個中文字（Backspace）
     pub fn pop_char(&mut self) -> Option<char> {
+        if let Some(b) = self.cursor_byte {
+            let b = b.min(self.raw_buffer.len());
+            if b == 0 {
+                return None;
+            }
+            let prefix = &self.raw_buffer[..b];
+            let (p_syls, _) = self.parse_zhuyin_segments(prefix);
+            let last_p = p_syls.last()?.clone();
+            let del_idx = p_syls.len() - 1;
+
+            // 若正在句中鍵入尚未組字成中文的按鍵（例如剛打完聲母 'r'），逐鍵退格
+            let is_raw_mid_typing = self.is_editing_mid_syllable
+                && !last_p.has_explicit_tone
+                && !(p_syls.len() >= 2 && self.prefix_ends_with_phrase(&p_syls));
+
+            if is_raw_mid_typing {
+                let prev_b = self.raw_buffer[..b]
+                    .char_indices()
+                    .last()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                let popped = self.raw_buffer.remove(prev_b);
+                if prev_b <= last_p.raw_start {
+                    self.is_editing_mid_syllable = false;
+                }
+                self.cursor_byte = if self.raw_buffer.is_empty() || prev_b >= self.raw_buffer.len() {
+                    None
+                } else {
+                    Some(prev_b)
+                };
+                return Some(popped);
+            }
+
+            // 否則游標左側已是完整中文字/音節，直接整字刪除！
+            let first_ch = self.raw_buffer[last_p.raw_start..last_p.raw_end]
+                .chars()
+                .next();
+            self.delete_syllable_range(del_idx, last_p.raw_start, last_p.raw_end);
+            return first_ch;
+        }
+
         let popped = self.raw_buffer.pop();
-        self.active_cursor_syl = None;
+        self.is_editing_mid_syllable = false;
         let (syllables, _) = self.parse_zhuyin_segments(&self.raw_buffer);
         let syl_count = syllables.len();
         self.user_overrides
@@ -207,73 +321,88 @@ impl DualPathDecoder {
         popped
     }
 
+    /// 向前刪除游標右側的中文字/音節（Forward Delete / Fn+Backspace）
+    pub fn delete_forward(&mut self) -> bool {
+        let Some(b) = self.cursor_byte else {
+            return false;
+        };
+        let b = b.min(self.raw_buffer.len());
+        if b >= self.raw_buffer.len() {
+            self.cursor_byte = None;
+            return false;
+        }
+        let (p_syls, _) = self.parse_zhuyin_segments(&self.raw_buffer[..b]);
+        let (s_syls, _) = self.parse_zhuyin_segments(&self.raw_buffer[b..]);
+        let Some(first_s) = s_syls.first() else {
+            return false;
+        };
+        let del_idx = p_syls.len();
+        self.delete_syllable_range(del_idx, b + first_s.raw_start, b + first_s.raw_end);
+        true
+    }
+
     /// 檢查是否有輸入暫存
     pub fn is_empty(&self) -> bool {
         self.raw_buffer.is_empty()
     }
 
-    /// 取消選詞游標，返回末尾繼續輸入
+    /// 取消編輯游標，返回末尾繼續輸入
     pub fn clear_cursor(&mut self) {
-        self.active_cursor_syl = None;
+        self.cursor_byte = None;
+        self.is_editing_mid_syllable = false;
     }
 
-    /// 檢查目前是否處於句中游標導覽 / 重選狀態
+    /// 檢查目前是否處於句中游標位置（非緩衝區末尾）
     pub fn has_active_cursor(&self) -> bool {
-        self.active_cursor_syl.is_some()
+        self.cursor_byte.is_some()
     }
 
-    /// 向左移動選詞區段游標（進行詞彙重選）
+    /// 向左移動一個音節/字元游標
     pub fn move_cursor_left(&mut self) -> bool {
-        let (segments, _, _, is_valid) = self.build_sentence_segments();
-        if !is_valid || segments.is_empty() {
+        if self.raw_buffer.is_empty() {
             return false;
         }
-        match self.active_cursor_syl {
-            None => {
-                self.active_cursor_syl = Some(segments.last().unwrap().start_syl);
-                true
-            }
-            Some(curr_syl) => {
-                if let Some(pos) = segments
-                    .iter()
-                    .position(|s| curr_syl >= s.start_syl && curr_syl < s.end_syl)
-                {
-                    if pos > 0 {
-                        self.active_cursor_syl = Some(segments[pos - 1].start_syl);
-                        return true;
-                    }
-                }
-                false
-            }
+        self.is_editing_mid_syllable = false;
+        let bound = self.cursor_byte.unwrap_or(self.raw_buffer.len()).min(self.raw_buffer.len());
+        if bound == 0 {
+            return false;
+        }
+        let (p_syls, _) = self.parse_zhuyin_segments(&self.raw_buffer[..bound]);
+        if let Some(last_p) = p_syls.last() {
+            self.cursor_byte = Some(last_p.raw_start);
+            true
+        } else {
+            false
         }
     }
 
-    /// 向右移動選詞區段游標
+    /// 向右移動一個音節/字元游標
     pub fn move_cursor_right(&mut self) -> bool {
-        let (segments, _, _, is_valid) = self.build_sentence_segments();
-        if !is_valid || segments.is_empty() {
+        let Some(b) = self.cursor_byte else {
+            return false;
+        };
+        self.is_editing_mid_syllable = false;
+        let b = b.min(self.raw_buffer.len());
+        if b >= self.raw_buffer.len() {
+            self.cursor_byte = None;
             return false;
         }
-        match self.active_cursor_syl {
-            None => false,
-            Some(curr_syl) => {
-                if let Some(pos) = segments
-                    .iter()
-                    .position(|s| curr_syl >= s.start_syl && curr_syl < s.end_syl)
-                {
-                    if pos + 1 < segments.len() {
-                        self.active_cursor_syl = Some(segments[pos + 1].start_syl);
-                        return true;
-                    }
-                }
-                self.active_cursor_syl = None;
-                true
-            }
+        let (s_syls, _) = self.parse_zhuyin_segments(&self.raw_buffer[b..]);
+        if let Some(first_s) = s_syls.first() {
+            let next_b = b + first_s.raw_end;
+            self.cursor_byte = if next_b >= self.raw_buffer.len() {
+                None
+            } else {
+                Some(next_b)
+            };
+            true
+        } else {
+            self.cursor_byte = None;
+            true
         }
     }
 
     /// 在組字緩衝內選取第 `index` 個候選詞替換當前區段
-    /// 若成功更新內部區段且仍有後續詞組可繼續編輯，返回 true；若整句只有此一詞組或應直接送出，可由前端決定提交
     pub fn apply_candidate_selection(&mut self, index: usize) -> Option<(Candidate, usize)> {
         let snap = self.get_composition_snapshot(256);
         let chosen = snap.candidates.get(index)?.clone();
@@ -287,14 +416,15 @@ impl DualPathDecoder {
             .retain(|(s, e, _)| *e <= chosen.span_start || *s >= chosen.span_end);
         self.user_overrides
             .push((chosen.span_start, chosen.span_end, chosen.text.clone()));
+        self.is_editing_mid_syllable = false;
 
-        // 若正處於區段重選游標模式，或選詞後仍有剩餘音節尚未涵蓋（例如把 "第一" 改選為單字 "地"），推進游標至下一個區段
-        let (segments, syllables, _, _) = self.build_sentence_segments();
-        if self.active_cursor_syl.is_some() || chosen.span_end < syllables.len() {
-            if let Some(next_seg) = segments.iter().find(|s| s.start_syl >= chosen.span_end) {
-                self.active_cursor_syl = Some(next_seg.start_syl);
+        // 若正處於句中游標模式，或選詞後仍有剩餘音節尚未涵蓋（例如把 "第一" 改選為單字 "地"），推進游標至下一個區段起點
+        let decoded = self.build_sentence_segments();
+        if self.cursor_byte.is_some() || chosen.span_end < decoded.syllables.len() {
+            if let Some(next_syl) = decoded.syllables.get(chosen.span_end) {
+                self.cursor_byte = Some(next_syl.raw_start);
             } else {
-                self.active_cursor_syl = None;
+                self.cursor_byte = None;
             }
         }
 
@@ -306,13 +436,15 @@ impl DualPathDecoder {
         self.get_composition_snapshot(1).preedit
     }
 
-    /// 取得完整組字狀態快照（含斷詞結果、游標選取範圍與候選詞）
+    /// 取得完整組字狀態快照（含斷詞結果、游標位置與候選詞）
     pub fn get_composition_snapshot(&self, limit: usize) -> CompositionSnapshot {
         if self.raw_buffer.is_empty() {
             return CompositionSnapshot {
                 preedit: String::new(),
                 cursor_utf16: 0,
                 selection_len_utf16: 0,
+                target_start_utf16: 0,
+                target_len_utf16: 0,
                 is_valid_zhuyin: false,
                 has_uppercase: false,
                 has_resolved_chinese: false,
@@ -324,50 +456,111 @@ impl DualPathDecoder {
         }
 
         let has_uppercase = self.raw_buffer.chars().any(|c| c.is_uppercase());
-        let (segments, syllables, resolved_len, is_valid_zhuyin) = self.build_sentence_segments();
-        let trailing_raw = if resolved_len < syllables.len() {
-            let start_byte = syllables[resolved_len].raw_start;
+        let decoded = self.build_sentence_segments();
+        let trailing_raw = if decoded.resolved_len < decoded.syllables.len() {
+            let start_byte = decoded.syllables[decoded.resolved_len].raw_start;
             &self.raw_buffer[start_byte..]
-        } else if !is_valid_zhuyin {
+        } else if !decoded.is_valid {
             self.raw_buffer.as_str()
         } else {
             ""
         };
 
-        // 組合行內顯示字串與計算高亮區段 UTF-16 偏移量
+        // 決定候選詞目標音節區間 (target_start, target_end)
+        let (target_start, target_end) = self.compute_target_span(&decoded);
+
+        // 組合行內顯示字串，並同時計算游標 UTF-16 位置與候選目標的 UTF-16 範圍
         let mut preedit = String::new();
         let mut cursor_utf16 = 0usize;
-        let mut selection_len_utf16 = 0usize;
+        let mut found_cursor = false;
+        let mut target_start_utf16 = 0usize;
+        let mut target_end_utf16 = 0usize;
+        let mut found_target_start = false;
+        let mut found_target_end = false;
 
-        if is_valid_zhuyin && !segments.is_empty() {
-            for seg in &segments {
-                let is_active = self
-                    .active_cursor_syl
-                    .map_or(false, |c| c >= seg.start_syl && c < seg.end_syl);
-                if is_active {
-                    cursor_utf16 = preedit.encode_utf16().count();
-                    selection_len_utf16 = seg.word.encode_utf16().count();
+        if decoded.is_valid && !decoded.segments.is_empty() {
+            for seg in &decoded.segments {
+                let seg_start_utf16 = preedit.encode_utf16().count();
+
+                if !found_cursor {
+                    if let Some(c_syl) = decoded.cursor_syl_idx {
+                        if c_syl == seg.start_syl {
+                            cursor_utf16 = seg_start_utf16;
+                            found_cursor = true;
+                        } else if c_syl > seg.start_syl && c_syl < seg.end_syl {
+                            let char_offset = c_syl - seg.start_syl;
+                            let partial_utf16: usize = seg
+                                .word
+                                .chars()
+                                .take(char_offset)
+                                .map(|c| c.len_utf16())
+                                .sum();
+                            cursor_utf16 = seg_start_utf16 + partial_utf16;
+                            found_cursor = true;
+                        }
+                    }
                 }
+
+                if !found_target_start && target_start >= seg.start_syl && target_start < seg.end_syl {
+                    let char_offset = target_start - seg.start_syl;
+                    let partial_utf16: usize = seg
+                        .word
+                        .chars()
+                        .take(char_offset)
+                        .map(|c| c.len_utf16())
+                        .sum();
+                    target_start_utf16 = seg_start_utf16 + partial_utf16;
+                    found_target_start = true;
+                }
+
                 preedit.push_str(&seg.word);
+                let seg_end_utf16 = preedit.encode_utf16().count();
+
+                if !found_target_end && target_end > seg.start_syl && target_end <= seg.end_syl {
+                    if target_end == seg.end_syl {
+                        target_end_utf16 = seg_end_utf16;
+                    } else {
+                        let char_offset = target_end - seg.start_syl;
+                        let partial_utf16: usize = seg
+                            .word
+                            .chars()
+                            .take(char_offset)
+                            .map(|c| c.len_utf16())
+                            .sum();
+                        target_end_utf16 = seg_start_utf16 + partial_utf16;
+                    }
+                    found_target_end = true;
+                }
             }
             if !trailing_raw.is_empty() {
+                let raw_start_utf16 = preedit.encode_utf16().count();
                 preedit.push_str(trailing_raw);
+                if !found_target_start {
+                    target_start_utf16 = raw_start_utf16;
+                    target_end_utf16 = preedit.encode_utf16().count();
+                }
             }
-            if self.active_cursor_syl.is_none() {
+            if !found_cursor {
                 cursor_utf16 = preedit.encode_utf16().count();
-                selection_len_utf16 = 0;
             }
         } else {
             preedit = self.raw_buffer.clone();
-            cursor_utf16 = preedit.encode_utf16().count();
+            cursor_utf16 = if let Some(b) = self.cursor_byte {
+                self.raw_buffer[..b.min(self.raw_buffer.len())]
+                    .encode_utf16()
+                    .count()
+            } else {
+                preedit.encode_utf16().count()
+            };
         }
+
+        let target_len_utf16 = target_end_utf16.saturating_sub(target_start_utf16);
 
         let candidates = self.build_candidates_internal(
             limit,
-            &segments,
-            &syllables,
-            resolved_len,
-            is_valid_zhuyin,
+            &decoded,
+            target_start,
+            target_end,
             has_uppercase,
         );
 
@@ -376,31 +569,80 @@ impl DualPathDecoder {
             .map_or(false, |c| c.candidate_type == CandidateType::English);
 
         // 判斷空白鍵是否應作為「一聲（陰平）」：
-        // 條件：沒有大寫、沒有進入游標重選、目前尾端音節為有效未標調注音且尚未被使用者手動選字覆寫、且英文並非絕對優先
-        let has_override_at_end = self
-            .user_overrides
-            .iter()
-            .any(|(_, end, _)| *end == syllables.len());
-        let should_space_act_as_tone = is_valid_zhuyin
+        // - 位於緩衝區末尾：尾端音節為有效未標調注音且未被手動覆寫
+        // - 位於句中編輯新音節時：游標左側剛輸入的音節為有效未標調注音
+        let active_syl_for_space = if let Some(c_syl) = decoded.cursor_syl_idx {
+            if self.is_editing_mid_syllable && c_syl > 0 {
+                let has_ov = self.user_overrides.iter().any(|(_, end, _)| *end == c_syl);
+                if has_ov {
+                    None
+                } else {
+                    decoded.syllables.get(c_syl - 1)
+                }
+            } else {
+                None
+            }
+        } else {
+            let has_ov = self
+                .user_overrides
+                .iter()
+                .any(|(_, end, _)| *end == decoded.syllables.len());
+            if has_ov {
+                None
+            } else {
+                decoded.syllables.last()
+            }
+        };
+
+        let should_space_act_as_tone = decoded.is_valid
             && !has_uppercase
-            && self.active_cursor_syl.is_none()
             && !top_is_english
-            && !has_override_at_end
-            && syllables
-                .last()
+            && active_syl_for_space
                 .map_or(false, |s| s.is_valid && !s.has_explicit_tone && s.has_phonemes());
 
         CompositionSnapshot {
             preedit,
             cursor_utf16,
-            selection_len_utf16,
-            is_valid_zhuyin,
+            selection_len_utf16: 0,
+            target_start_utf16,
+            target_len_utf16,
+            is_valid_zhuyin: decoded.is_valid,
             has_uppercase,
-            has_resolved_chinese: !segments.is_empty(),
+            has_resolved_chinese: !decoded.segments.is_empty(),
             should_space_act_as_tone,
-            segment_count: segments.len(),
-            syllable_count: syllables.len(),
+            segment_count: decoded.segments.len(),
+            syllable_count: decoded.syllables.len(),
             candidates,
+        }
+    }
+
+    fn compute_target_span(&self, decoded: &SentenceDecodeResult) -> (usize, usize) {
+        if !decoded.is_valid || decoded.syllables.is_empty() {
+            return (0, 0);
+        }
+        if let Some(curr_syl) = decoded.cursor_syl_idx {
+            if self.is_editing_mid_syllable && curr_syl > 0 {
+                return (curr_syl - 1, curr_syl);
+            }
+            if let Some(seg) = decoded
+                .segments
+                .iter()
+                .find(|s| curr_syl >= s.start_syl && curr_syl < s.end_syl)
+            {
+                return (curr_syl.max(seg.start_syl), seg.end_syl);
+            }
+            if curr_syl > 0 {
+                if let Some(last_seg) = decoded.segments.last() {
+                    return (last_seg.start_syl, last_seg.end_syl);
+                }
+            }
+            return (0, decoded.syllables.len());
+        }
+        if !decoded.segments.is_empty() && decoded.resolved_len == decoded.syllables.len() {
+            let last_seg = decoded.segments.last().unwrap();
+            (last_seg.start_syl, last_seg.end_syl)
+        } else {
+            (decoded.resolved_len, decoded.syllables.len())
         }
     }
 
@@ -412,10 +654,9 @@ impl DualPathDecoder {
     fn build_candidates_internal(
         &self,
         limit: usize,
-        segments: &[DecodedSegment],
-        syllables: &[SyllableBucket],
-        resolved_len: usize,
-        is_valid_zhuyin: bool,
+        decoded: &SentenceDecodeResult,
+        target_start: usize,
+        target_end: usize,
         has_uppercase: bool,
     ) -> Vec<Candidate> {
         let mut candidates: Vec<Candidate> = Vec::new();
@@ -428,25 +669,8 @@ impl DualPathDecoder {
             .map_or(false, |c| c.is_uppercase());
 
         // 1. 若處於中文句子編輯/選詞模式且已有有效注音音節
-        if is_valid_zhuyin && !syllables.is_empty() {
-            // 決定要列舉候選詞的區段目標 (span_start, span_end)
-            let (target_start, target_end) = if let Some(curr_syl) = self.active_cursor_syl {
-                if let Some(seg) = segments
-                    .iter()
-                    .find(|s| curr_syl >= s.start_syl && curr_syl < s.end_syl)
-                {
-                    (seg.start_syl, seg.end_syl)
-                } else {
-                    (0, syllables.len())
-                }
-            } else if !segments.is_empty() && resolved_len == syllables.len() {
-                let last_seg = segments.last().unwrap();
-                (last_seg.start_syl, last_seg.end_syl)
-            } else {
-                // 有未結算尾端音節（例如 "fu" 或 "你c" 或 "w8"）
-                (resolved_len, syllables.len())
-            };
-
+        if decoded.is_valid && !decoded.syllables.is_empty() {
+            let syllables = &decoded.syllables;
             let max_end = syllables.len();
 
             // 1A. 若為單一詞彙或鎖定目標區段，優先列出目標區段精確匹配詞條
@@ -490,11 +714,13 @@ impl DualPathDecoder {
                 }
 
                 for (word, base_score) in self.chinese_lexicon.find_exact(&target_zy) {
-                    let adaptive_boost = self.user_db.get_adaptive_boost(&word, prev_word);
+                    let (uni, bi) = self
+                        .user_db
+                        .get_adaptive_boost_for_reading(&target_zy, &word, prev_word);
                     if !candidates.iter().any(|c| c.text == word) {
                         candidates.push(Candidate {
                             text: word,
-                            score: base_score + adaptive_boost + 3000.0,
+                            score: base_score + uni + bi + 3000.0,
                             candidate_type: CandidateType::Chinese,
                             annotation: Some(target_zy.clone()),
                             span_start: target_start,
@@ -512,7 +738,10 @@ impl DualPathDecoder {
                             .next()
                             .map(|c| ('\u{3105}'..='\u{3129}').contains(&c))
                             .unwrap_or(false);
-                    let zy_adaptive = self.user_db.get_adaptive_boost(&target_zy, prev_word);
+                    let (zy_uni, zy_bi) = self
+                        .user_db
+                        .get_adaptive_boost_for_reading(&target_zy, &target_zy, prev_word);
+                    let zy_adaptive = zy_uni + zy_bi;
 
                     let mut exact_non_zy_scores: Vec<f64> = candidates
                         .iter()
@@ -575,11 +804,13 @@ impl DualPathDecoder {
                         -200.0
                     };
                     for (word, base_score) in self.chinese_lexicon.find_exact(&alt_zy).into_iter().take(30) {
-                        let adaptive_boost = self.user_db.get_adaptive_boost(&word, prev_word);
+                        let (uni, bi) = self
+                            .user_db
+                            .get_adaptive_boost_for_reading(&alt_zy, &word, prev_word);
                         if !candidates.iter().any(|c| c.text == word) {
                             candidates.push(Candidate {
                                 text: word,
-                                score: base_score + adaptive_boost + len_bonus + 1500.0,
+                                score: base_score + uni + bi + len_bonus + 1500.0,
                                 candidate_type: CandidateType::Chinese,
                                 annotation: Some(alt_zy.clone()),
                                 span_start: target_start,
@@ -590,13 +821,15 @@ impl DualPathDecoder {
                 }
 
                 // 1C. 若處於一般輸入（非游標重選），補上以此音節開頭的前綴自動完成詞（例如輸入 "ㄅㄨˋㄓ" 即可提前看到 "不知道" 3 字詞）
-                if self.active_cursor_syl.is_none() {
+                if self.cursor_byte.is_none() {
                     for (word, base_score) in self.chinese_lexicon.find_prefix(&target_zy, limit) {
-                        let adaptive_boost = self.user_db.get_adaptive_boost(&word, prev_word);
+                        let (uni, bi) = self
+                            .user_db
+                            .get_adaptive_boost_for_reading(&target_zy, &word, prev_word);
                         if !candidates.iter().any(|c| c.text == word) {
                             candidates.push(Candidate {
                                 text: word,
-                                score: base_score + adaptive_boost - 1000.0,
+                                score: base_score + uni + bi - 1000.0,
                                 candidate_type: CandidateType::Chinese,
                                 annotation: Some(target_zy.clone()),
                                 span_start: target_start,
@@ -633,7 +866,7 @@ impl DualPathDecoder {
                 score += 3000.0;
             }
 
-            if !is_valid_zhuyin {
+            if !decoded.is_valid {
                 score += 3000.0;
             }
 
@@ -670,7 +903,7 @@ impl DualPathDecoder {
         if !candidates.iter().any(|c| c.text == self.raw_buffer) {
             let fallback_score = if has_uppercase {
                 5000.0
-            } else if !is_valid_zhuyin {
+            } else if !decoded.is_valid {
                 800.0
             } else {
                 10.0
@@ -701,15 +934,18 @@ impl DualPathDecoder {
             return;
         }
 
-        let (segments, syllables, _, is_valid) = self.build_sentence_segments();
+        let decoded = self.build_sentence_segments();
         let prev_last = self.last_committed_word.clone();
-        let valid_segments: Vec<&DecodedSegment> = if is_valid {
-            segments
+        let valid_segments: Vec<&DecodedSegment> = if decoded.is_valid {
+            decoded
+                .segments
                 .iter()
                 .filter(|seg| {
                     !seg.word.is_empty()
-                        && (seg.start_syl..seg.end_syl)
-                            .all(|idx| syllables.get(idx).map(|s| s.is_valid).unwrap_or(false))
+                        && !seg.zhuyin.is_empty()
+                        && (seg.start_syl..seg.end_syl).all(|idx| {
+                            decoded.syllables.get(idx).map(|s| s.is_valid).unwrap_or(false)
+                        })
                 })
                 .collect()
         } else {
@@ -717,41 +953,140 @@ impl DualPathDecoder {
         };
 
         let joined_valid: String = valid_segments.iter().map(|s| s.word.as_str()).collect();
-        if !valid_segments.is_empty() && (joined_valid == text || segments.iter().map(|s| s.word.as_str()).collect::<String>() == text) {
-            let seg_words: Vec<&str> = valid_segments.iter().map(|s| s.word.as_str()).collect();
+        if !valid_segments.is_empty()
+            && (joined_valid == text
+                || decoded
+                    .segments
+                    .iter()
+                    .map(|s| s.word.as_str())
+                    .collect::<String>()
+                    == text)
+        {
+            let seg_items: Vec<(&str, &str)> = valid_segments
+                .iter()
+                .map(|s| (s.zhuyin.as_str(), s.word.as_str()))
+                .collect();
             self.user_db
-                .record_commit_with_prev(prev_last.as_deref(), &seg_words);
+                .record_commit_with_readings(prev_last.as_deref(), &seg_items);
 
-            // 使用者手動選過字的區段額外強化一次 Unigram 權重，確保下次直接偏好該字詞
+            // 使用者手動選過字的區段額外強化一次讀音 Unigram 權重，確保下次直接偏好該字詞
             for seg in &valid_segments {
                 if self
                     .user_overrides
                     .iter()
                     .any(|(s, e, _)| *s == seg.start_syl && *e == seg.end_syl)
                 {
-                    self.user_db.record_commit(&[seg.word.as_str()]);
+                    self.user_db
+                        .record_commit_with_readings(None, &[(seg.zhuyin.as_str(), seg.word.as_str())]);
                 }
             }
             self.last_committed_word = valid_segments.last().map(|s| s.word.clone());
+        } else if decoded.is_valid && valid_segments.len() == 1 && !text.is_ascii() {
+            let zy = valid_segments[0].zhuyin.as_str();
+            self.user_db
+                .record_commit_with_readings(prev_last.as_deref(), &[(zy, text)]);
+            if valid_segments[0].word != text {
+                self.user_db.record_commit_with_readings(None, &[(zy, text)]);
+            }
+            self.last_committed_word = Some(text.to_string());
         } else {
             self.user_db
                 .record_commit_with_prev(prev_last.as_deref(), &[text]);
-            // 單字/單詞由候選窗直接選字送出時（與原預設不同），給予額外強化
-            if is_valid && valid_segments.len() == 1 && valid_segments[0].word != text {
-                self.user_db.record_commit(&[text]);
-            }
             self.last_committed_word = Some(text.to_string());
         }
 
         self.clear();
     }
 
+    fn prefix_ends_with_phrase(&self, syls: &[SyllableBucket]) -> bool {
+        let n = syls.len();
+        if n < 2 {
+            return false;
+        }
+        let start_min = n.saturating_sub(8);
+        (start_min..n - 1).any(|start| {
+            if syls[start..n].iter().any(|s| !s.is_valid) {
+                return false;
+            }
+            let zy: String = syls[start..n]
+                .iter()
+                .map(|s| s.to_canonical_string())
+                .collect();
+            !self.chinese_lexicon.find_exact(&zy).is_empty()
+                || !self.custom_dict.query(&zy).is_empty()
+        })
+    }
+
+    fn parse_zhuyin_with_cursor(&self) -> (Vec<SyllableBucket>, Option<usize>, bool) {
+        let Some(b) = self.cursor_byte else {
+            let (syllables, is_valid) = self.parse_zhuyin_segments(&self.raw_buffer);
+            return (syllables, None, is_valid);
+        };
+
+        if self.raw_buffer.is_empty()
+            || self
+                .raw_buffer
+                .chars()
+                .next()
+                .map_or(false, |c| c.is_uppercase())
+        {
+            return (Vec::new(), Some(0), false);
+        }
+
+        let b = b.min(self.raw_buffer.len());
+        let (p_syls, _) = self.parse_zhuyin_segments(&self.raw_buffer[..b]);
+        let (mut s_syls, _) = self.parse_zhuyin_segments(&self.raw_buffer[b..]);
+        for s in &mut s_syls {
+            s.raw_start += b;
+            s.raw_end += b;
+        }
+        let cursor_syl_idx = p_syls.len();
+        let mut all = p_syls;
+        all.extend(s_syls);
+
+        if all.is_empty() {
+            return (all, Some(0), false);
+        }
+
+        let is_valid = if let Some(first_bad) = all.iter().position(|s| !s.is_valid) {
+            let has_explicit_tone = all.iter().any(|s| s.is_valid && s.has_explicit_tone);
+            let is_exact_english = self.raw_buffer.chars().all(|c| c.is_ascii_alphabetic())
+                && !self
+                    .english_lexicon
+                    .find_exact(&self.raw_buffer.to_ascii_lowercase())
+                    .is_empty();
+            let has_multi_phrase = !is_exact_english
+                && (0..all.len()).any(|i| {
+                    ((i + 2)..=all.len().min(i + 8)).any(|j| {
+                        if all[i..j].iter().any(|s| !s.is_valid) {
+                            return false;
+                        }
+                        let zy: String = all[i..j].iter().map(|s| s.to_canonical_string()).collect();
+                        !self.chinese_lexicon.find_exact(&zy).is_empty()
+                            || !self.custom_dict.query(&zy).is_empty()
+                    })
+                });
+            let _ = first_bad;
+            has_explicit_tone || has_multi_phrase
+        } else {
+            true
+        };
+
+        (all, Some(cursor_syl_idx), is_valid)
+    }
+
     /// 以 Viterbi DP 演算法對音節序列進行最佳斷詞與組字
-    fn build_sentence_segments(&self) -> (Vec<DecodedSegment>, Vec<SyllableBucket>, usize, bool) {
-        let (syllables, is_valid) = self.parse_zhuyin_segments(&self.raw_buffer);
+    fn build_sentence_segments(&self) -> SentenceDecodeResult {
+        let (syllables, cursor_syl_idx, is_valid) = self.parse_zhuyin_with_cursor();
         let n = syllables.len();
         if !is_valid || n == 0 {
-            return (Vec::new(), syllables, 0, is_valid);
+            return SentenceDecodeResult {
+                segments: Vec::new(),
+                syllables,
+                resolved_len: 0,
+                cursor_syl_idx,
+                is_valid,
+            };
         }
 
         // 若輸入為 >= 3 字元的純英文字母且無任何聲調、無多音節中文詞組，且符合英文單字詞庫，判定為英文優先
@@ -768,53 +1103,72 @@ impl DualPathDecoder {
                 })
             });
             if !has_any_multi_phrase && !self.english_lexicon.find_exact(&raw_lower).is_empty() {
-                return (Vec::new(), syllables, 0, false);
+                return SentenceDecodeResult {
+                    segments: Vec::new(),
+                    syllables,
+                    resolved_len: 0,
+                    cursor_syl_idx,
+                    is_valid: false,
+                };
             }
         }
 
-        // 計算應轉換為中文的已結算音節長度 resolved_len：
-        // 1. 最後一個音節有明確聲調 (3/4/6/7/空白) 或本身為錯字孤立區段，則整串皆已結算 (resolved_len = n)
-        // 2. 否則若有長度 >= 2 的有效多音節詞組剛好收尾於 n（例如 "今天" ㄐㄧㄣㄊㄧㄢ），也視為已結算 (resolved_len = n)
-        // 3. 若尾端音節已被使用者手動鎖定覆寫，也視為已結算 (resolved_len = n)
-        // 4. 否則前面已閉合的音節 (0..n-1) 已結算，僅保留最後一個正在輸入中的音節為英文原字
-        let last_has_tone = syllables[n - 1].has_explicit_tone;
-        let last_is_invalid = !syllables[n - 1].is_valid;
-        let has_multi_phrase_ending = if n >= 2 {
-            let start_min = n.saturating_sub(8);
-            (start_min..n - 1).any(|start| {
-                if syllables[start..n].iter().any(|s| !s.is_valid) {
-                    return false;
+        // 若游標正在句中鍵入尚未閉合的新音節，暫將該音節保留為原按鍵文字而不強行轉中文
+        let unclosed_mid_syl = if let Some(c_syl) = cursor_syl_idx {
+            if self.is_editing_mid_syllable && c_syl > 0 && c_syl <= n {
+                let p_slice = &syllables[..c_syl];
+                let p_last = &p_slice[c_syl - 1];
+                let has_ov = self.user_overrides.iter().any(|(_, end, _)| *end == c_syl);
+                if p_last.has_explicit_tone
+                    || !p_last.is_valid
+                    || has_ov
+                    || self.prefix_ends_with_phrase(p_slice)
+                {
+                    None
+                } else {
+                    Some(c_syl - 1)
                 }
-                let zy: String = syllables[start..n]
-                    .iter()
-                    .map(|s| s.to_canonical_string())
-                    .collect();
-                !self.chinese_lexicon.find_exact(&zy).is_empty()
-                    || !self.custom_dict.query(&zy).is_empty()
-            })
+            } else {
+                None
+            }
         } else {
-            false
+            None
         };
 
+        // 計算應轉換為中文的已結算音節長度 resolved_len：
+        let last_has_tone = syllables[n - 1].has_explicit_tone;
+        let last_is_invalid = !syllables[n - 1].is_valid;
+        let has_multi_phrase_ending = self.prefix_ends_with_phrase(&syllables);
         let has_override_at_end = self.user_overrides.iter().any(|(_, end, _)| *end == n);
 
-        let resolved_len = if last_has_tone || last_is_invalid || has_multi_phrase_ending || has_override_at_end {
+        let resolved_len = if last_has_tone
+            || last_is_invalid
+            || has_multi_phrase_ending
+            || has_override_at_end
+            || (cursor_syl_idx.is_some() && unclosed_mid_syl != Some(n - 1))
+        {
             n
         } else {
             n.saturating_sub(1)
         };
 
         if resolved_len == 0 {
-            return (Vec::new(), syllables, 0, is_valid);
+            return SentenceDecodeResult {
+                segments: Vec::new(),
+                syllables,
+                resolved_len: 0,
+                cursor_syl_idx,
+                is_valid,
+            };
         }
 
-        // Viterbi DP: 尋找 0..=resolved_len 最高分斷詞路徑（錯字區段保持原按鍵並隔離不跨越合併）
+        // Viterbi DP: 尋找 0..=resolved_len 最高分斷詞路徑（錯字區段與句中未閉合輸入保持原按鍵並隔離不跨越合併）
         let mut dp_score = vec![f64::NEG_INFINITY; resolved_len + 1];
         let mut dp_prev: Vec<Option<(usize, String, String)>> = vec![None; resolved_len + 1];
         dp_score[0] = 0.0;
 
         for j in 1..=resolved_len {
-            if !syllables[j - 1].is_valid {
+            if !syllables[j - 1].is_valid || unclosed_mid_syl == Some(j - 1) {
                 if dp_score[j - 1] != f64::NEG_INFINITY {
                     let raw_slice =
                         self.raw_buffer[syllables[j - 1].raw_start..syllables[j - 1].raw_end].to_string();
@@ -825,7 +1179,7 @@ impl DualPathDecoder {
             }
             let i_min = j.saturating_sub(8);
             for i in (i_min..j).rev() {
-                if !syllables[i].is_valid {
+                if !syllables[i].is_valid || unclosed_mid_syl == Some(i) {
                     break;
                 }
                 if dp_score[i] == f64::NEG_INFINITY {
@@ -862,7 +1216,7 @@ impl DualPathDecoder {
                     start_syl: prev_idx,
                     end_syl: curr,
                     word: word.clone(),
-                    _zhuyin: zy.clone(),
+                    zhuyin: zy.clone(),
                 });
                 curr = prev_idx;
             } else {
@@ -872,14 +1226,20 @@ impl DualPathDecoder {
                     start_syl: curr - 1,
                     end_syl: curr,
                     word: fallback_zy.clone(),
-                    _zhuyin: fallback_zy,
+                    zhuyin: fallback_zy,
                 });
                 curr -= 1;
             }
         }
         segments.reverse();
 
-        (segments, syllables, resolved_len, is_valid)
+        SentenceDecodeResult {
+            segments,
+            syllables,
+            resolved_len,
+            cursor_syl_idx,
+            is_valid,
+        }
     }
 
     fn best_word_for_span(
@@ -906,22 +1266,32 @@ impl DualPathDecoder {
         let prev_word = prev_word_override.or(self.last_committed_word.as_deref());
         let span_len = end - start;
         let phrase_bonus = if span_len >= 2 {
-            (span_len - 1) as f64 * 1850.0
+            (span_len - 1) as f64 * 2300.0
         } else {
             0.0
         };
 
-        // 3. 內建大詞庫精確匹配
+        // 3. 內建大詞庫精確匹配：
+        // 同區段同音字競爭使用完整讀音自適應加權；跨區段 DP 邊權則限制單字 Unigram 加權，避免高頻單字（如「一」「個」「的」）拆散常見詞組
         let exact = self.chinese_lexicon.find_exact(zhuyin);
-        if let Some((best_w, best_s)) = exact
+        if let Some((best_w, _sel_score, edge_score)) = exact
             .into_iter()
             .map(|(w, base)| {
-                let adaptive = self.user_db.get_adaptive_boost(&w, prev_word);
-                (w, base + adaptive + phrase_bonus)
+                let (uni, bi) = self
+                    .user_db
+                    .get_adaptive_boost_for_reading(zhuyin, &w, prev_word);
+                let selection_score = base + uni + bi;
+                let viterbi_uni = if span_len == 1 {
+                    uni.min(150.0)
+                } else {
+                    uni.min(600.0 * span_len as f64)
+                };
+                let dp_edge = base + phrase_bonus + bi + viterbi_uni;
+                (w, selection_score, dp_edge)
             })
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         {
-            return Some((best_w, best_s));
+            return Some((best_w, edge_score));
         }
 
         // 4. 單音節輕聲或未標調的容錯保底（例如 "ㄉㄜ" 對應 "的"）

@@ -34,6 +34,8 @@ public struct CompositionSnapshot: Codable {
     public let preedit: String
     public let cursor_utf16: Int
     public let selection_len_utf16: Int
+    public let target_start_utf16: Int
+    public let target_len_utf16: Int
     public let is_valid_zhuyin: Bool
     public let has_uppercase: Bool
     public let has_resolved_chinese: Bool
@@ -72,6 +74,12 @@ public class SmartEngine {
     public func pop() -> Bool {
         guard let handle = handle else { return false }
         return smart_ime_pop_char(handle)
+    }
+
+    @discardableResult
+    public func deleteForward() -> Bool {
+        guard let handle = handle else { return false }
+        return smart_ime_delete_forward(handle)
     }
 
     public func clear() {

@@ -16,6 +16,7 @@ void smart_ime_free(SmartEngineHandle engine);
 
 void smart_ime_push_char(SmartEngineHandle engine, uint32_t ch);
 bool smart_ime_pop_char(SmartEngineHandle engine);
+bool smart_ime_delete_forward(SmartEngineHandle engine);
 void smart_ime_clear(SmartEngineHandle engine);
 bool smart_ime_is_empty(SmartEngineHandle engine);
 

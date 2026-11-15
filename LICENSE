@@ -24,6 +24,11 @@ SOFTWARE.
 
 Third-Party Data Notice:
 The built-in Traditional Chinese Zhuyin lexicon (`rust_engine/data/lexicon.txt`)
-incorporates phrase and frequency data derived from McBopomofo
-(https://github.com/openvanilla/McBopomofo), Copyright (c) 2011-2026
-Mengjuei Hsieh et al., licensed under the MIT License.
+incorporates phrase and frequency data derived from:
+- McBopomofo (https://github.com/openvanilla/McBopomofo), Copyright (c) 2011-2026
+  Mengjuei Hsieh et al., licensed under the MIT License.
+- Jieba / jieba-zh_TW (https://github.com/fxsjy/jieba and
+  https://github.com/ldkrsi/jieba-zh_TW), Copyright (c) 2013 Sun Junyi,
+  licensed under the MIT License.
+
+See THIRD_PARTY_LICENSES.md for the preserved full third-party license texts.

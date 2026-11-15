@@ -244,10 +244,23 @@ public class XingYuInputController: IMKInputController {
             // 緩衝區為空時直接放行給系統執行標準退格刪除，避免干擾正常文字編輯！
             return false
 
+        case 117: // Forward Delete (Fn + Backspace)
+            if !engine.isEmpty {
+                engine.deleteForward()
+                selectedIndex = 0
+                isSelectingCandidate = false
+                updateUI(client: client)
+                return true
+            }
+            return false
+
         case 53: // Escape
             if !engine.isEmpty {
-                if isSelectingCandidate || engine.hasActiveCursor {
+                if isSelectingCandidate {
                     isSelectingCandidate = false
+                    selectedIndex = 0
+                    updateUI(client: client)
+                } else if engine.hasActiveCursor {
                     engine.clearCursor()
                     selectedIndex = 0
                     updateUI(client: client)
@@ -261,7 +274,7 @@ public class XingYuInputController: IMKInputController {
 
         case 36, 76: // Return / Enter (含數字鍵盤 Enter)
             if !engine.isEmpty {
-                if isSelectingCandidate || engine.hasActiveCursor {
+                if isSelectingCandidate {
                     // 選字時按 Enter：若僅選取較短前段詞會推進至剩餘音節；一旦選完至句尾最後一字，直接確認並送出整句（無需再多按一次 Enter）
                     applySelectionOrCommit(at: selectedIndex, client: client, bySpace: false, commitOnComplete: true)
                 } else {
@@ -289,38 +302,33 @@ public class XingYuInputController: IMKInputController {
             }
             return false
 
-        case 123: // Left Arrow: 選字列橫向往前（單段瀏覽時），或向左移動至前一個詞彙區段進行重選
+        case 123: // Left Arrow: 一般狀態在暫存區中字間左移游標（可搭配 Backspace 刪字或插入）；水平選字列模式則左移候選字
             if !engine.isEmpty {
-                if isSelectingCandidate && !engine.hasActiveCursor && (lastSnapshot?.segment_count ?? 0) <= 1 && !currentCandidates.isEmpty {
+                if isSelectingCandidate && currentWindowOrientation == "horizontal" && !currentCandidates.isEmpty {
                     selectedIndex = max(0, selectedIndex - 1)
                     showCandidates(client: client)
                     previewSelectedCandidate(client: client)
-                } else if engine.moveCursorLeft() {
-                    isSelectingCandidate = true
+                } else {
+                    engine.moveCursorLeft()
+                    isSelectingCandidate = false
                     selectedIndex = 0
-                    updateUI(client: client, keepSelectingIfActiveCursor: true)
-                } else if !currentCandidates.isEmpty {
-                    isSelectingCandidate = true
-                    selectedIndex = max(0, selectedIndex - 1)
-                    showCandidates(client: client)
-                    previewSelectedCandidate(client: client)
+                    updateUI(client: client)
                 }
                 return true
             }
             return false
 
-        case 124: // Right Arrow: 向右移動詞彙區段（或下一個候選字）
+        case 124: // Right Arrow: 一般狀態在暫存區中字間右移游標；水平選字列模式則右移候選字
             if !engine.isEmpty {
-                if engine.hasActiveCursor {
-                    engine.moveCursorRight()
-                    selectedIndex = 0
-                    updateUI(client: client, keepSelectingIfActiveCursor: true)
-                    return true
-                } else if isSelectingCandidate && !currentCandidates.isEmpty {
+                if isSelectingCandidate && currentWindowOrientation == "horizontal" && !currentCandidates.isEmpty {
                     selectedIndex = min(currentCandidates.count - 1, selectedIndex + 1)
                     showCandidates(client: client)
                     previewSelectedCandidate(client: client)
-                    return true
+                } else {
+                    engine.moveCursorRight()
+                    isSelectingCandidate = false
+                    selectedIndex = 0
+                    updateUI(client: client)
                 }
                 return true
             }
@@ -405,8 +413,8 @@ public class XingYuInputController: IMKInputController {
             }
         }
 
-        // C. 主鍵盤數字鍵 (1-9): 當處於選字模式或游標重選狀態時，直接按數字鍵完成當頁選詞/重選
-        if !event.modifierFlags.contains(.shift) && (isSelectingCandidate || engine.hasActiveCursor) && firstChar.isNumber && firstChar != "0" {
+        // C. 主鍵盤數字鍵 (1-9): 僅當處於選字模式時，直接按數字鍵完成當頁選詞/重選（避免移動游標編輯時攔截注音鍵 1,2,5,8,9）
+        if !event.modifierFlags.contains(.shift) && isSelectingCandidate && firstChar.isNumber && firstChar != "0" {
             if let num = Int(String(firstChar)), num >= 1 && num <= pageSize {
                 let targetIndex = pageStart + num - 1
                 if targetIndex < currentCandidates.count {
@@ -449,13 +457,13 @@ public class XingYuInputController: IMKInputController {
     private func previewSelectedCandidate(client: IMKTextInput) {
         guard selectedIndex >= 0 && selectedIndex < currentCandidates.count else { return }
         let preview = currentCandidates[selectedIndex].text
-        if let snap = lastSnapshot, snap.segment_count > 1 && snap.selection_len_utf16 > 0 {
+        if let snap = lastSnapshot, snap.segment_count > 1 && snap.target_len_utf16 > 0 {
             // 在長句中重選單一區段時，即時置換該區段於整句中的預覽！
             let fullNs = snap.preedit as NSString
-            let replaceRange = NSRange(location: snap.cursor_utf16, length: snap.selection_len_utf16)
+            let replaceRange = NSRange(location: snap.target_start_utf16, length: snap.target_len_utf16)
             if replaceRange.location + replaceRange.length <= fullNs.length {
                 let updated = fullNs.replacingCharacters(in: replaceRange, with: preview)
-                let newSel = NSRange(location: snap.cursor_utf16, length: preview.utf16.count)
+                let newSel = NSRange(location: snap.target_start_utf16, length: preview.utf16.count)
                 client.setMarkedText(updated as NSString, selectionRange: newSel, replacementRange: NSRange(location: NSNotFound, length: 0))
                 return
             }
@@ -567,7 +575,7 @@ public class XingYuInputController: IMKInputController {
         if engine.selectCandidate(at: index) {
             selectedIndex = 0
             // 透過數字鍵 / 點擊 / 空白鍵選完最後一字後：先收合選字窗避免誤以為還要再選，同時保持底線組字狀態方便重選或一次 Enter 送出
-            updateUI(client: client, keepSelectingIfActiveCursor: true, hideCandidates: !engine.hasActiveCursor)
+            updateUI(client: client, keepSelectingIfActiveCursor: false, hideCandidates: true)
             return
         }
 

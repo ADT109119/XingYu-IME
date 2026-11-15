@@ -251,4 +251,4 @@ cargo test --manifest-path rust_engine/Cargo.toml
 ## 八、 授權協議與致謝 (License & Acknowledgments)
 
 - 本專案採用 [MIT License](LICENSE) 授權條款。
-- 內建繁體中文注音詞庫包含來自 [openvanilla/McBopomofo](https://github.com/openvanilla/McBopomofo)（MIT License）的字音與詞頻資料，特此致謝。
+- 內建繁體中文注音詞庫包含來自 [openvanilla/McBopomofo](https://github.com/openvanilla/McBopomofo)（MIT License）的字音與詞頻資料，並參考整合來自 [fxsjy/jieba](https://github.com/fxsjy/jieba) 與 [ldkrsi/jieba-zh_TW](https://github.com/ldkrsi/jieba-zh_TW)（MIT License，Copyright (c) 2013 Sun Junyi）的繁體中文詞庫與詞頻資料；完整第三方授權條款請見 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。
