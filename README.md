@@ -99,6 +99,9 @@ graph TB
 brew install --cask ADT109119/tap/xingyu-ime
 ```
 
+> [!NOTE]
+> 若使用 Homebrew 7.x 以上版本首次安裝第三方 Tap 時出現 untrusted tap 提示，請先執行 `brew trust ADT109119/tap` 再安裝。
+
 升級版本：
 
 ```bash
