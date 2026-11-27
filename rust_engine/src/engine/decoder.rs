@@ -1895,7 +1895,9 @@ impl DualPathDecoder {
                         || !self.custom_dict.query(&zy).is_empty()
                 })
             });
-            if !has_any_multi_phrase && !self.english_lexicon.find_prefix(&raw_lower, 1).is_empty() {
+            let is_english = !self.english_lexicon.find_exact(&raw_lower).is_empty()
+                || (n >= 2 && !self.english_lexicon.find_prefix(&raw_lower, 1).is_empty());
+            if !has_any_multi_phrase && is_english {
                 return SentenceDecodeResult {
                     segments: Vec::new(),
                     syllables,
@@ -1959,9 +1961,11 @@ impl DualPathDecoder {
                         })
                     });
                     let tail_lower = tail_raw.to_ascii_lowercase();
-                    if !tail_has_multi_phrase
-                        && !self.english_lexicon.find_prefix(&tail_lower, 1).is_empty()
-                    {
+                    let tail_syl_count = n - last_boundary;
+                    let tail_is_english = !self.english_lexicon.find_exact(&tail_lower).is_empty()
+                        || (tail_syl_count >= 2
+                            && !self.english_lexicon.find_prefix(&tail_lower, 1).is_empty());
+                    if !tail_has_multi_phrase && tail_is_english {
                         Some(last_boundary)
                     } else {
                         None

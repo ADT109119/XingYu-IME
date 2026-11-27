@@ -979,4 +979,58 @@ mod tests {
         assert!(dec.pop_char().is_some());
         assert_eq!(dec.get_preedit_string(), "我");
     }
+
+    #[test]
+    fn test_single_syllable_zhuyin_vs_english_prefix_regression() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 1. 「rup」（今）、「rul」（交）、「ful」（敲）、「vul」（消）雖剛好是英文前綴，但為合法單注音音節：
+        //    未按空白鍵前必須維持 should_space_act_as_tone == true，且按空白鍵要能正常打出中文
+        for (raw_keys, space_expected) in [
+            ("rup", "今"),
+            ("rul", "交"),
+            ("ful", "敲"),
+            ("vul", "消"),
+        ] {
+            dec.clear();
+            for ch in raw_keys.chars() {
+                dec.push_char(ch);
+            }
+            let snap_before = dec.get_composition_snapshot(5);
+            assert!(
+                snap_before.is_valid_zhuyin && snap_before.should_space_act_as_tone,
+                "single Zhuyin syllable '{}' must keep Space as 1st tone (not switch to English)",
+                raw_keys
+            );
+            assert_eq!(snap_before.english_ghost, "");
+
+            dec.push_char(' ');
+            assert_eq!(dec.get_preedit_string(), space_expected);
+        }
+
+        // 2. 輸入「今天」（無論 rup + Space + wu0 或 rupwu0）及句尾「我今」（ji3rup + Space）都必須正確組字
+        for (keys, expected) in [
+            ("rup wu0", "今天"),
+            ("rupwu0", "今天"),
+            ("ji3rup ", "我今"),
+            ("ji3rup wu0", "我今天"),
+        ] {
+            dec.clear();
+            for ch in keys.chars() {
+                dec.push_char(ch);
+            }
+            assert_eq!(dec.get_preedit_string(), expected, "failed for '{}'", keys);
+        }
+
+        // 3. 真正繼續輸入成多音節或完整英文單字（如 "rule", "full", "rupt"）時仍正常走英文與補字路徑
+        dec.clear();
+        for ch in "rupt".chars() {
+            dec.push_char(ch);
+        }
+        let rupt_snap = dec.get_composition_snapshot(5);
+        assert!(!rupt_snap.is_valid_zhuyin);
+        assert_eq!(rupt_snap.preedit, "rupt");
+        assert_eq!(rupt_snap.english_ghost, "ure");
+    }
 }
