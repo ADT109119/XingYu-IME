@@ -10,7 +10,7 @@ public class SettingsModel: ObservableObject {
         didSet { UserDefaults.standard.set(enableMixedTyping, forKey: "XingYu_EnableMixedTyping") }
     }
     @Published public var shiftToEnglish: Bool {
-        didSet { UserDefaults.standard.set(shiftToEnglish, forKey: "XingYu_ShiftToEnglish") }
+        didSet { UserDefaults.standard.set(shiftToEnglish, forKey: "XingYu_ShiftDirectUppercase") }
     }
     @Published public var candidateCount: Int {
         didSet { UserDefaults.standard.set(candidateCount, forKey: "XingYu_CandidateCount") }
@@ -40,7 +40,7 @@ public class SettingsModel: ObservableObject {
 
         self.keyboardLayout = UserDefaults.standard.string(forKey: "XingYu_KeyboardLayout") ?? "dachen"
         self.enableMixedTyping = UserDefaults.standard.object(forKey: "XingYu_EnableMixedTyping") as? Bool ?? true
-        self.shiftToEnglish = UserDefaults.standard.object(forKey: "XingYu_ShiftToEnglish") as? Bool ?? true
+        self.shiftToEnglish = UserDefaults.standard.object(forKey: "XingYu_ShiftDirectUppercase") as? Bool ?? true
         self.candidateCount = UserDefaults.standard.object(forKey: "XingYu_CandidateCount") as? Int ?? 9
         self.windowOrientation = UserDefaults.standard.string(forKey: "XingYu_WindowOrientation") ?? "horizontal"
 

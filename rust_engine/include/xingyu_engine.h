@@ -30,6 +30,9 @@ bool smart_ime_move_cursor_right(SmartEngineHandle engine);
 void smart_ime_clear_cursor(SmartEngineHandle engine);
 bool smart_ime_has_active_cursor(SmartEngineHandle engine);
 bool smart_ime_select_candidate(SmartEngineHandle engine, size_t index);
+const char* smart_ime_get_alternatives_json(SmartEngineHandle engine, size_t limit);
+bool smart_ime_select_alternative(SmartEngineHandle engine, size_t index);
+bool smart_ime_accept_english_ghost(SmartEngineHandle engine);
 
 bool smart_ime_load_custom_dict(SmartEngineHandle engine, const char* path);
 bool smart_ime_init_user_db(SmartEngineHandle engine, const char* path);

@@ -128,6 +128,38 @@ pub extern "C" fn smart_ime_select_candidate(engine: *mut DualPathDecoder, index
 }
 
 #[no_mangle]
+pub extern "C" fn smart_ime_get_alternatives_json(
+    engine: *mut DualPathDecoder,
+    limit: usize,
+) -> *const c_char {
+    if engine.is_null() {
+        return CString::new("[]").unwrap_or_default().into_raw();
+    }
+    let engine = unsafe { &*engine };
+    let alts = engine.get_alternatives(limit);
+    let json = serde_json::to_string(&alts).unwrap_or_else(|_| "[]".to_string());
+    CString::new(json).unwrap_or_default().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn smart_ime_select_alternative(engine: *mut DualPathDecoder, index: usize) -> bool {
+    if engine.is_null() {
+        return false;
+    }
+    let engine = unsafe { &mut *engine };
+    engine.apply_alternative_selection(index).is_some()
+}
+
+#[no_mangle]
+pub extern "C" fn smart_ime_accept_english_ghost(engine: *mut DualPathDecoder) -> bool {
+    if engine.is_null() {
+        return false;
+    }
+    let engine = unsafe { &mut *engine };
+    engine.accept_english_ghost()
+}
+
+#[no_mangle]
 pub extern "C" fn smart_ime_commit_text(engine: *mut DualPathDecoder, text: *const c_char) {
     if text.is_null() {
         return;

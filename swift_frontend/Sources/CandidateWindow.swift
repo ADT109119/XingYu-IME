@@ -7,11 +7,23 @@ struct CandidateView: View {
     let currentPage: Int
     let totalPages: Int
     let isVertical: Bool
+    let modeLabel: String?
     let onSelectOffset: (Int) -> Void
     let onPageStep: (Int) -> Void
 
     var body: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 4) {
+            if let modeLabel = modeLabel {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(modeLabel)
+                        .font(.system(size: 10.5, weight: .semibold))
+                }
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 4)
+            }
+
             if isVertical {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(pageCandidates.enumerated()), id: \.offset) { idx, item in
@@ -121,10 +133,18 @@ struct CandidateView: View {
         switch tag {
         case "自訂":
             return Color.orange
-        case "英":
+        case "英", "全英":
             return Color.blue
         case "注":
             return Color.teal
+        case "中":
+            return Color.green
+        case "調":
+            return Color.purple
+        case "近音":
+            return Color.indigo
+        case "字", "詞":
+            return Color.brown
         default:
             return Color.gray
         }
@@ -154,6 +174,7 @@ public class CandidatePanel: NSPanel {
         selectedIndex: Int,
         pageSize: Int = 9,
         orientation: String = "horizontal",
+        modeLabel: String? = nil,
         at point: NSPoint,
         onSelect: ((Int) -> Void)? = nil,
         onPageStep: ((Int) -> Void)? = nil
@@ -178,6 +199,7 @@ public class CandidatePanel: NSPanel {
             currentPage: currentPage,
             totalPages: totalPages,
             isVertical: orientation == "vertical",
+            modeLabel: modeLabel,
             onSelectOffset: { offset in
                 onSelect?(pageStart + offset)
             },

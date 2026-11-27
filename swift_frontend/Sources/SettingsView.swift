@@ -74,8 +74,8 @@ public struct SettingsView: View {
                 }
                 .pickerStyle(.menu)
 
-                Toggle("啟用中英混打 (智慧判斷英文單字)", isOn: $settingsModel.enableMixedTyping)
-                Toggle("首字母大寫自動切換英文模式", isOn: $settingsModel.shiftToEnglish)
+                Toggle("啟用中英混打 (智慧判斷英文單字與 Tab 補字)", isOn: $settingsModel.enableMixedTyping)
+                Toggle("按住 Shift + 英文直接輸出大寫 (不觸發選字)", isOn: $settingsModel.shiftToEnglish)
             }
 
             Section(header: Text("候選字顯示").font(.headline)) {

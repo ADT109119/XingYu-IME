@@ -10,8 +10,15 @@ public class XingYuInputController: IMKInputController {
     private var selectedIndex: Int = 0
     private var customDictPath: String
 
-    // 是否正處於方向鍵 / Tab 選字模式
-    private var isSelectingCandidate: Bool = false
+    private enum CandidateSelectionMode {
+        case none
+        case candidates    // ↓ 向下展開一般選字 / 選詞選單
+        case alternatives  // ↑ 向上展開華碩式快速轉換選單（注音 / 英文 / 調與近音 / 相似詞）
+    }
+
+    // 是否正處於方向鍵 / Tab 選字或轉換模式
+    private var selectionMode: CandidateSelectionMode = .none
+    private var isSelectingCandidate: Bool { selectionMode != .none }
 
     public override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -118,7 +125,9 @@ public class XingYuInputController: IMKInputController {
         let totalPages = (currentCandidates.count + pageSize - 1) / pageSize
         let nextPage = max(0, min(totalPages - 1, currentPage + delta))
         selectedIndex = nextPage * pageSize
-        isSelectingCandidate = true
+        if selectionMode == .none {
+            selectionMode = .candidates
+        }
         showCandidates(client: client)
         previewSelectedCandidate(client: client)
     }
@@ -215,9 +224,24 @@ public class XingYuInputController: IMKInputController {
         }
 
         // 1. 全形標點符號優先處理（含 Ctrl+' -> 「、」）
+        // 若目前正在組字暫存區中，將標點符號保留並加入暫存區（不清空緩衝），方便用方向鍵 ← / → 回到標點前面修改或重選中文字
         if let punct = getFullwidthPunctuation(event: event) {
             if !engine.isEmpty {
-                commitCurrentBuffer(client: client, bySpace: false)
+                if isSelectingCandidate {
+                    let applyOk = (selectionMode == .alternatives)
+                        ? engine.selectAlternative(at: selectedIndex)
+                        : engine.selectCandidate(at: selectedIndex)
+                    if !applyOk {
+                        commitCurrentBuffer(client: client, bySpace: false)
+                    }
+                    selectionMode = .none
+                    selectedIndex = 0
+                }
+                for ch in punct {
+                    engine.push(char: ch)
+                }
+                updateUI(client: client, hideCandidates: true)
+                return true
             }
             client.insertText(punct as NSString, replacementRange: NSRange(location: NSNotFound, length: 0))
             return true
@@ -237,7 +261,7 @@ public class XingYuInputController: IMKInputController {
             if !engine.isEmpty {
                 engine.pop()
                 selectedIndex = 0
-                isSelectingCandidate = false
+                selectionMode = .none
                 updateUI(client: client)
                 return true
             }
@@ -248,7 +272,7 @@ public class XingYuInputController: IMKInputController {
             if !engine.isEmpty {
                 engine.deleteForward()
                 selectedIndex = 0
-                isSelectingCandidate = false
+                selectionMode = .none
                 updateUI(client: client)
                 return true
             }
@@ -257,7 +281,7 @@ public class XingYuInputController: IMKInputController {
         case 53: // Escape
             if !engine.isEmpty {
                 if isSelectingCandidate {
-                    isSelectingCandidate = false
+                    selectionMode = .none
                     selectedIndex = 0
                     updateUI(client: client)
                 } else if engine.hasActiveCursor {
@@ -302,7 +326,7 @@ public class XingYuInputController: IMKInputController {
             }
             return false
 
-        case 123: // Left Arrow: 一般狀態在暫存區中字間左移游標（可搭配 Backspace 刪字或插入）；水平選字列模式則左移候選字
+        case 123: // Left Arrow: 一般狀態在暫存區中字間左移游標（可搭配 Backspace 刪字或插入）；水平選單模式則左移選項
             if !engine.isEmpty {
                 if isSelectingCandidate && currentWindowOrientation == "horizontal" && !currentCandidates.isEmpty {
                     selectedIndex = max(0, selectedIndex - 1)
@@ -310,7 +334,7 @@ public class XingYuInputController: IMKInputController {
                     previewSelectedCandidate(client: client)
                 } else {
                     engine.moveCursorLeft()
-                    isSelectingCandidate = false
+                    selectionMode = .none
                     selectedIndex = 0
                     updateUI(client: client)
                 }
@@ -318,7 +342,7 @@ public class XingYuInputController: IMKInputController {
             }
             return false
 
-        case 124: // Right Arrow: 一般狀態在暫存區中字間右移游標；水平選字列模式則右移候選字
+        case 124: // Right Arrow: 一般狀態在暫存區中字間右移游標；水平選單模式則右移選項
             if !engine.isEmpty {
                 if isSelectingCandidate && currentWindowOrientation == "horizontal" && !currentCandidates.isEmpty {
                     selectedIndex = min(currentCandidates.count - 1, selectedIndex + 1)
@@ -326,7 +350,7 @@ public class XingYuInputController: IMKInputController {
                     previewSelectedCandidate(client: client)
                 } else {
                     engine.moveCursorRight()
-                    isSelectingCandidate = false
+                    selectionMode = .none
                     selectedIndex = 0
                     updateUI(client: client)
                 }
@@ -346,34 +370,93 @@ public class XingYuInputController: IMKInputController {
                 return true
             }
 
-        case 48: // Tab: 進入選字模式並循環切換候選詞
-            if !engine.isEmpty && !currentCandidates.isEmpty {
-                if !isSelectingCandidate {
-                    isSelectingCandidate = true
-                    selectedIndex = currentCandidates.count > 1 ? 1 : 0
-                } else {
-                    selectedIndex = (selectedIndex + 1) % currentCandidates.count
+        case 48: // Tab: 若有行內英文半透明預選補字則直接補入；否則進入選字模式並循環切換候選詞
+            if !engine.isEmpty {
+                if selectionMode == .none,
+                   let ghost = lastSnapshot?.english_ghost,
+                   !ghost.isEmpty,
+                   engine.acceptEnglishGhost() {
+                    selectedIndex = 0
+                    selectionMode = .none
+                    updateUI(client: client, hideCandidates: true)
+                    return true
                 }
-                showCandidates(client: client)
-                previewSelectedCandidate(client: client)
-                return true
+                if !currentCandidates.isEmpty {
+                    if selectionMode == .none {
+                        selectionMode = .candidates
+                        selectedIndex = currentCandidates.count > 1 ? 1 : 0
+                    } else {
+                        selectedIndex = (selectedIndex + 1) % currentCandidates.count
+                    }
+                    showCandidates(client: client)
+                    previewSelectedCandidate(client: client)
+                    return true
+                }
             }
 
-        case 126: // Up Arrow: 上一個候選詞
-            if !engine.isEmpty && !currentCandidates.isEmpty {
-                isSelectingCandidate = true
-                selectedIndex = max(0, selectedIndex - 1)
-                showCandidates(client: client)
-                previewSelectedCandidate(client: client)
-                return true
+        case 126: // Up Arrow: 華碩智慧輸入法式快速轉換選單（注音 / 英文 / 同音異調 / 近音與相似詞）
+            if !engine.isEmpty {
+                switch selectionMode {
+                case .none:
+                    let alts = engine.getAlternatives(limit: 50)
+                    if !alts.isEmpty {
+                        selectionMode = .alternatives
+                        currentCandidates = alts
+                        selectedIndex = 0
+                        showCandidates(client: client)
+                        previewSelectedCandidate(client: client)
+                        return true
+                    } else if !currentCandidates.isEmpty {
+                        selectionMode = .candidates
+                        selectedIndex = 0
+                        showCandidates(client: client)
+                        previewSelectedCandidate(client: client)
+                        return true
+                    }
+                case .alternatives:
+                    if !currentCandidates.isEmpty {
+                        if currentWindowOrientation == "horizontal" {
+                            selectedIndex = (selectedIndex + 1) % currentCandidates.count
+                        } else {
+                            selectedIndex = selectedIndex > 0 ? selectedIndex - 1 : currentCandidates.count - 1
+                        }
+                        showCandidates(client: client)
+                        previewSelectedCandidate(client: client)
+                        return true
+                    }
+                case .candidates:
+                    if !currentCandidates.isEmpty {
+                        if selectedIndex > 0 {
+                            selectedIndex -= 1
+                            showCandidates(client: client)
+                            previewSelectedCandidate(client: client)
+                            return true
+                        } else if currentWindowOrientation == "horizontal" {
+                            let alts = engine.getAlternatives(limit: 50)
+                            if !alts.isEmpty {
+                                selectionMode = .alternatives
+                                currentCandidates = alts
+                                selectedIndex = 0
+                                showCandidates(client: client)
+                                previewSelectedCandidate(client: client)
+                                return true
+                            }
+                        }
+                    }
+                }
             }
 
-        case 125: // Down Arrow: 進入選字 / 下一個候選詞
-            if !engine.isEmpty && !currentCandidates.isEmpty {
-                if !isSelectingCandidate {
-                    isSelectingCandidate = true
+        case 125: // Down Arrow: 專門開啟一般選字 / 選詞 / 英文補全選單，或往下選擇候選字
+            if !engine.isEmpty {
+                if selectionMode == .none {
+                    if let snap = lastSnapshot ?? engine.getCompositionSnapshot(limit: 200) {
+                        lastSnapshot = snap
+                        currentCandidates = snap.candidates
+                    }
+                    guard !currentCandidates.isEmpty else { return false }
+                    selectionMode = .candidates
                     selectedIndex = currentCandidates.count > 1 ? 1 : 0
-                } else {
+                } else if !currentCandidates.isEmpty {
                     selectedIndex = min(currentCandidates.count - 1, selectedIndex + 1)
                 }
                 showCandidates(client: client)
@@ -424,6 +507,19 @@ public class XingYuInputController: IMKInputController {
             }
         }
 
+        // D. 按住 Shift + 英文字母：直接輸出純英文大寫，不開啟暫存區也不觸發任何選字
+        let directUppercaseEnabled = UserDefaults.standard.object(forKey: "XingYu_ShiftDirectUppercase") as? Bool ?? true
+        if directUppercaseEnabled && event.modifierFlags.contains(.shift) && firstChar.isASCII && firstChar.isLetter {
+            if !engine.isEmpty {
+                commitCurrentBuffer(client: client, bySpace: false)
+            }
+            client.insertText(String(firstChar) as NSString, replacementRange: NSRange(location: NSNotFound, length: 0))
+            candidatePanel.hide()
+            selectionMode = .none
+            selectedIndex = 0
+            return true
+        }
+
         // 4. 若當前輸入緩衝區為空，檢查首鍵合法性
         if engine.isEmpty {
             if !event.modifierFlags.contains(.shift) && ["3", "4", "6", "7"].contains(firstChar) {
@@ -436,10 +532,8 @@ public class XingYuInputController: IMKInputController {
                 return false
             }
         } else {
-            // 5. 若目前正在組中文句，突然按下 Shift + 大寫英文字母（想在中文後直接混打英文）：
-            // 自動確認先前的中文組字，並無縫以該大寫字母開啟新英文緩衝區！
-            let shiftToEnglishEnabled = UserDefaults.standard.object(forKey: "XingYu_ShiftToEnglish") as? Bool ?? true
-            if shiftToEnglishEnabled && firstChar.isASCII && firstChar.isUppercase {
+            // 5. 當「直接輸出大寫」被使用者關閉時，保留舊版大寫自動切英文緩衝行為
+            if !directUppercaseEnabled && firstChar.isASCII && firstChar.isUppercase {
                 if let snap = lastSnapshot, snap.has_resolved_chinese && !snap.has_uppercase {
                     commitCurrentBuffer(client: client, bySpace: false)
                 }
@@ -448,7 +542,7 @@ public class XingYuInputController: IMKInputController {
 
         // 6. 一般字元推入（支援連續整句注音與 Shift 大寫英文）
         engine.push(char: firstChar)
-        isSelectingCandidate = false
+        selectionMode = .none
         selectedIndex = 0
         updateUI(client: client)
         return true
@@ -456,25 +550,29 @@ public class XingYuInputController: IMKInputController {
 
     private func previewSelectedCandidate(client: IMKTextInput) {
         guard selectedIndex >= 0 && selectedIndex < currentCandidates.count else { return }
-        let preview = currentCandidates[selectedIndex].text
-        if let snap = lastSnapshot, snap.segment_count > 1 && snap.target_len_utf16 > 0 {
-            // 在長句中重選單一區段時，即時置換該區段於整句中的預覽！
-            let fullNs = snap.preedit as NSString
-            let replaceRange = NSRange(location: snap.target_start_utf16, length: snap.target_len_utf16)
-            if replaceRange.location + replaceRange.length <= fullNs.length {
-                let updated = fullNs.replacingCharacters(in: replaceRange, with: preview)
-                let newSel = NSRange(location: snap.target_start_utf16, length: preview.utf16.count)
-                client.setMarkedText(updated as NSString, selectionRange: newSel, replacementRange: NSRange(location: NSNotFound, length: 0))
-                return
-            }
-        } else if let snap = lastSnapshot, snap.segment_count > 1 {
-            // 若未指定游標但有多段詞組，替換最後一個區段預覽
-            if let cand = currentCandidates.first, snap.preedit.hasSuffix(cand.text) {
-                let prefixLen = snap.preedit.utf16.count - cand.text.utf16.count
-                let prefix = (snap.preedit as NSString).substring(to: prefixLen)
-                let updated = prefix + preview
-                client.setMarkedText(updated as NSString, selectionRange: NSRange(location: updated.utf16.count, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
-                return
+        let chosen = currentCandidates[selectedIndex]
+        let preview = chosen.text
+        if let snap = lastSnapshot {
+            let pStart = chosen.preview_start_utf16 ?? snap.target_start_utf16
+            let pLen = chosen.preview_len_utf16 ?? snap.target_len_utf16
+            if pLen > 0 {
+                let fullNs = snap.preedit as NSString
+                let replaceRange = NSRange(location: pStart, length: pLen)
+                if replaceRange.location + replaceRange.length <= fullNs.length {
+                    let updated = fullNs.replacingCharacters(in: replaceRange, with: preview)
+                    let newSel = NSRange(location: pStart, length: preview.utf16.count)
+                    client.setMarkedText(updated as NSString, selectionRange: newSel, replacementRange: NSRange(location: NSNotFound, length: 0))
+                    return
+                }
+            } else if snap.segment_count > 1 {
+                // 若未指定範圍但有多段詞組，替換最後一個區段預覽
+                if let cand = snap.candidates.first, snap.preedit.hasSuffix(cand.text) {
+                    let prefixLen = snap.preedit.utf16.count - cand.text.utf16.count
+                    let prefix = (snap.preedit as NSString).substring(to: prefixLen)
+                    let updated = prefix + preview
+                    client.setMarkedText(updated as NSString, selectionRange: NSRange(location: updated.utf16.count, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+                    return
+                }
             }
         }
         client.setMarkedText(preview as NSString, selectionRange: NSRange(location: preview.utf16.count, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -487,7 +585,7 @@ public class XingYuInputController: IMKInputController {
             currentCandidates.removeAll()
             lastSnapshot = nil
             selectedIndex = 0
-            isSelectingCandidate = false
+            selectionMode = .none
             return
         }
 
@@ -496,12 +594,33 @@ public class XingYuInputController: IMKInputController {
         currentCandidates = snap.candidates
         selectedIndex = 0
         if !keepSelectingIfActiveCursor || !engine.hasActiveCursor {
-            isSelectingCandidate = false
+            selectionMode = .none
         }
 
         let selRange = NSRange(location: snap.cursor_utf16, length: snap.selection_len_utf16)
-        client.setMarkedText(snap.preedit as NSString, selectionRange: selRange, replacementRange: NSRange(location: NSNotFound, length: 0))
-        if hideCandidates && !engine.hasActiveCursor {
+        let ghost = snap.english_ghost ?? ""
+        if !ghost.isEmpty {
+            let composed = NSMutableAttributedString(
+                string: snap.preedit,
+                attributes: [
+                    .underlineStyle: NSUnderlineStyle.single.rawValue
+                ]
+            )
+            let ghostAttr = NSAttributedString(
+                string: ghost,
+                attributes: [
+                    // 採用具象 sRGB 中性灰 (#9999A1)，確保跨行程 IMK 傳遞並在全黑與淺色背景上皆清晰可辨
+                    .foregroundColor: NSColor(srgbRed: 0.60, green: 0.60, blue: 0.63, alpha: 1.0)
+                ]
+            )
+            composed.append(ghostAttr)
+            client.setMarkedText(composed, selectionRange: selRange, replacementRange: NSRange(location: NSNotFound, length: 0))
+        } else {
+            client.setMarkedText(snap.preedit as NSString, selectionRange: selRange, replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+
+        let isQuietEnglishGhost = !ghost.isEmpty && selectionMode == .none
+        if (hideCandidates || isQuietEnglishGhost) && !engine.hasActiveCursor {
             candidatePanel.hide()
         } else {
             showCandidates(client: client)
@@ -519,11 +638,13 @@ public class XingYuInputController: IMKInputController {
         if point.x == 0 && point.y == 0 {
             point = NSEvent.mouseLocation
         }
+        let modeLabel = (selectionMode == .alternatives) ? "注音 / 英文 / 相似轉換" : nil
         candidatePanel.update(
             candidates: currentCandidates,
             selectedIndex: selectedIndex,
             pageSize: currentPageSize,
             orientation: currentWindowOrientation,
+            modeLabel: modeLabel,
             at: point,
             onSelect: { [weak self] absoluteIndex in
                 self?.applySelectionOrCommit(at: absoluteIndex, client: client, bySpace: false)
@@ -537,19 +658,28 @@ public class XingYuInputController: IMKInputController {
     private func applySelectionOrCommit(at index: Int, client: IMKTextInput, bySpace: Bool, commitOnComplete: Bool = false) {
         guard index >= 0 && index < currentCandidates.count else { return }
         let chosen = currentCandidates[index]
+        let wasAlternativeMode = (selectionMode == .alternatives)
         let totalSyllables = lastSnapshot?.syllable_count ?? 0
+        let chosenSpanStart = chosen.span_start ?? 0
         let chosenSpanEnd = chosen.span_end ?? totalSyllables
-        let chosenEndsEarly = chosenSpanEnd < totalSyllables
+        let hasSpan = chosenSpanEnd > chosenSpanStart
+        let chosenEndsEarly = hasSpan && chosenSpanEnd < totalSyllables
 
-        if chosen.candidate_type == "English" {
+        let applyToEngine: (Int) -> Bool = { idx in
+            wasAlternativeMode ? self.engine.selectAlternative(at: idx) : self.engine.selectCandidate(at: idx)
+        }
+
+        // 僅在無 span 區段的純英文選單項目時直接上屏；若帶有 span 區段（如句中轉英文按鍵或單字），則留在暫存區套用
+        if chosen.candidate_type == "English" && !hasSpan {
             commitCandidate(at: index, client: client, bySpace: bySpace)
             return
         }
 
         // 若選詞後仍有未涵蓋的後續音節（如從「第一」改選單字「地」，或於長句前段重選詞組），在句內套用並推進至下一區段繼續編輯
         if chosenEndsEarly {
-            if engine.selectCandidate(at: index) {
+            if applyToEngine(index) {
                 selectedIndex = 0
+                selectionMode = .none
                 updateUI(client: client, keepSelectingIfActiveCursor: true)
                 return
             }
@@ -560,8 +690,8 @@ public class XingYuInputController: IMKInputController {
         // - 透過數字鍵 / 點擊 / 空白鍵選字時（commitOnComplete == false）：套用選詞並保留於組字緩衝區，讓使用者仍可繼續打字或重選。
         if commitOnComplete {
             let segCount = lastSnapshot?.segment_count ?? 0
-            if segCount > 1 || engine.hasActiveCursor {
-                if engine.selectCandidate(at: index),
+            if segCount > 1 || engine.hasActiveCursor || hasSpan {
+                if applyToEngine(index),
                    let updatedSnap = engine.getCompositionSnapshot(limit: 1),
                    !updatedSnap.preedit.isEmpty {
                     commitText(updatedSnap.preedit, learningWord: updatedSnap.preedit, client: client)
@@ -572,8 +702,9 @@ public class XingYuInputController: IMKInputController {
             return
         }
 
-        if engine.selectCandidate(at: index) {
+        if applyToEngine(index) {
             selectedIndex = 0
+            selectionMode = .none
             // 透過數字鍵 / 點擊 / 空白鍵選完最後一字後：先收合選字窗避免誤以為還要再選，同時保持底線組字狀態方便重選或一次 Enter 送出
             updateUI(client: client, keepSelectingIfActiveCursor: false, hideCandidates: true)
             return
@@ -587,16 +718,23 @@ public class XingYuInputController: IMKInputController {
         if let snap = snap {
             // 若為英文模式或首選詞為英文且尚未解出中文句子
             if !snap.has_resolved_chinese, let top = snap.candidates.first, top.candidate_type == "English" {
-                var textToInsert = top.text
+                let ghost = snap.english_ghost ?? ""
+                // 若使用者未按 Tab 補入行內幽靈預測字即直接按 Space / Enter，保留實際輸入的英文而非強行替換成預測長詞
+                let baseWord = (!ghost.isEmpty && top.text.caseInsensitiveCompare(snap.preedit) != .orderedSame)
+                    ? snap.preedit
+                    : top.text
+                var textToInsert = baseWord
                 if bySpace {
                     textToInsert += " "
                 }
-                commitText(textToInsert, learningWord: top.text, client: client)
+                commitText(textToInsert, learningWord: baseWord, client: client)
                 return
             }
-            // 若整句皆已解為中文詞句，直接送出整句組字結果
+            // 若整句皆已解為中文詞句（或含混打結尾英文），直接送出整句組字結果；若以英文結尾且由空白鍵送出，保留空格
             if !snap.preedit.isEmpty {
-                commitText(snap.preedit, learningWord: snap.preedit, client: client)
+                let appendSpace = bySpace && (snap.preedit.last?.isASCII ?? false)
+                let outText = appendSpace ? (snap.preedit + " ") : snap.preedit
+                commitText(outText, learningWord: snap.preedit, client: client)
                 return
             }
         }
@@ -624,6 +762,6 @@ public class XingYuInputController: IMKInputController {
         currentCandidates.removeAll()
         lastSnapshot = nil
         selectedIndex = 0
-        isSelectingCandidate = false
+        selectionMode = .none
     }
 }

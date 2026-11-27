@@ -696,4 +696,287 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_up_arrow_alternatives_zhuyin_english_and_similar() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 1. 輸入 "我今天"，游標左移一次停在「天」前面 ("我今|天")，模擬按 ↑ 叫出轉換選單
+        for ch in "ji3rupwu0".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "我今天");
+        assert!(dec.move_cursor_left());
+
+        let alts = dec.get_alternatives(40);
+        // 應包含注音 [注]、原始英文按鍵 [英]、整句英文 [全英]、以及異調 [調] (如 ㄊㄧㄢˊ 田/填)
+        let zy_idx = alts
+            .iter()
+            .position(|c| c.text == "ㄊㄧㄢ" && c.annotation.as_deref() == Some("注"))
+            .expect("expected 'ㄊㄧㄢ' [注] in alternatives");
+        assert_eq!(alts[zy_idx].preview_start_utf16, Some(2));
+        assert_eq!(alts[zy_idx].preview_len_utf16, Some(1));
+
+        assert!(
+            alts.iter().any(|c| c.text == "wu0" && c.annotation.as_deref() == Some("英")),
+            "expected 'wu0' [英] in alternatives: {:?}",
+            alts.iter().map(|c| (&c.text, &c.annotation)).collect::<Vec<_>>()
+        );
+        assert!(
+            alts.iter().any(|c| c.text == "ji3rupwu0" && c.annotation.as_deref() == Some("全英")),
+            "expected 'ji3rupwu0' [全英] in alternatives"
+        );
+        assert!(
+            alts.iter().any(|c| c.annotation.as_deref() == Some("調")),
+            "expected tone-variant [調] candidates in alternatives"
+        );
+
+        // 套用第 1 項「ㄊㄧㄢ」[注]，應僅替換該字為 "我今ㄊㄧㄢ"
+        dec.apply_alternative_selection(zy_idx);
+        assert_eq!(dec.get_preedit_string(), "我今ㄊㄧㄢ");
+
+        // 2. 句中未按 Shift 混打英文：
+        // (a) >= 3 字母的英文句尾 ("ji3good") 應自動維持為 "我good"，且按 ↑ 可切換大小寫 ("Good") 與詞庫補全
+        dec.clear();
+        for ch in "ji3good".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "我good");
+        let mixed_alts = dec.get_alternatives(40);
+        let good_title_idx = mixed_alts
+            .iter()
+            .position(|c| c.text == "Good" && c.annotation.as_deref() == Some("英"))
+            .expect("expected 'Good' [英] in alternatives for 我good");
+        assert_eq!(mixed_alts[good_title_idx].span_start, 1);
+        assert_eq!(mixed_alts[good_title_idx].span_end, 3);
+        dec.apply_alternative_selection(good_title_idx);
+        assert_eq!(dec.get_preedit_string(), "我Good");
+
+        // (b) 游標移至句中某字（「我|會」）時，透過 ↑ 可將該字轉回原始英文按鍵 "cjo4"
+        dec.clear();
+        for ch in "ji3cjo4".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "我會");
+        assert!(dec.move_cursor_left());
+        let hui_alts = dec.get_alternatives(40);
+        let cjo4_idx = hui_alts
+            .iter()
+            .position(|c| c.text == "cjo4" && c.annotation.as_deref() == Some("英"))
+            .expect("expected 'cjo4' [英] in alternatives for 我會");
+        dec.apply_alternative_selection(cjo4_idx);
+        assert_eq!(dec.get_preedit_string(), "我cjo4");
+
+        // 送出 "我cjo4" 後不應把 ASCII "cjo4" 污染進讀音資料庫
+        dec.commit_text("我cjo4");
+        let entries = dec.user_db.get_entries_snapshot(50);
+        assert!(!entries.unigrams.iter().any(|u| u.word == "cjo4"));
+
+        // 3. 純英文緩衝區 "hello" 按 ↑ 也應提供大小寫與英文候補轉換
+        dec.clear();
+        for ch in "hello".chars() {
+            dec.push_char(ch);
+        }
+        let eng_alts = dec.get_alternatives(20);
+        assert!(eng_alts.iter().any(|c| c.text == "Hello"));
+        assert!(eng_alts.iter().any(|c| c.text == "HELLO"));
+
+        // 4. 捲舌/平舌與前後鼻音近音容錯 ([近音])：例如輸入 "gp " ("ㄕㄣ" 身) 應包含 ㄙㄣ (森) 與 ㄕㄥ (生/聲)
+        dec.clear();
+        for ch in "gp ".chars() {
+            dec.push_char(ch);
+        }
+        let sound_alts = dec.get_alternatives(40);
+        assert!(
+            sound_alts.iter().any(|c| c.annotation.as_deref() == Some("近音")),
+            "expected confused-sound [近音] candidate in {:?}",
+            sound_alts.iter().map(|c| (&c.text, &c.annotation)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_backspace_deletes_whole_chinese_char_at_tail() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 1. 「我好」在句尾按 Backspace 應直接整字刪掉「好」，不會變回「我cl」
+        for ch in "ji3cl3".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "我好");
+        assert!(dec.pop_char().is_some());
+        assert_eq!(dec.get_preedit_string(), "我");
+        assert!(dec.pop_char().is_some());
+        assert_eq!(dec.get_preedit_string(), "");
+
+        // 2. 無空白連續詞「我今天」按 Backspace 刪「天」後，「今」必須維持為中文而非退回「我rup」
+        for ch in "ji3rupwu0".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "我今天");
+        assert!(dec.pop_char().is_some());
+        assert_eq!(dec.get_preedit_string(), "我今");
+        assert!(dec.pop_char().is_some());
+        assert_eq!(dec.get_preedit_string(), "我");
+        assert!(dec.pop_char().is_some());
+        assert_eq!(dec.get_preedit_string(), "");
+
+        // 3. 若尾端是尚未組完的按鍵「我c」，Backspace 僅刪 'c' 保留「我」
+        for ch in "ji3c".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "我c");
+        assert_eq!(dec.pop_char(), Some('c'));
+        assert_eq!(dec.get_preedit_string(), "我");
+    }
+
+    #[test]
+    fn test_english_inline_ghost_and_tab_completion() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 1. 輸入 "comp" 應產生行內半透明補字 "uter"，按 Tab (accept_english_ghost) 補完為 "computer"
+        for ch in "comp".chars() {
+            dec.push_char(ch);
+        }
+        let snap1 = dec.get_composition_snapshot(10);
+        assert_eq!(snap1.preedit, "comp");
+        assert_eq!(snap1.english_ghost, "uter");
+        assert!(dec.accept_english_ghost());
+        let snap1_done = dec.get_composition_snapshot(10);
+        assert_eq!(snap1_done.preedit, "computer");
+        assert_eq!(snap1_done.english_ghost, "");
+
+        // 2. 輸入 "app" -> "apple"
+        dec.clear();
+        for ch in "app".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_composition_snapshot(10).english_ghost, "le");
+        assert!(dec.accept_english_ghost());
+        assert_eq!(dec.get_preedit_string(), "apple");
+
+        // 3. 中英混打句尾英文："這是app" -> ghost "le" -> Tab 後變成 "這是apple"
+        dec.clear();
+        for ch in "5k4g4app".chars() {
+            dec.push_char(ch);
+        }
+        let mixed_snap = dec.get_composition_snapshot(10);
+        assert_eq!(mixed_snap.preedit, "這是app");
+        assert_eq!(mixed_snap.english_ghost, "le");
+        assert!(dec.accept_english_ghost());
+        assert_eq!(dec.get_preedit_string(), "這是apple");
+
+        // 4. 正在打中文單音節未標調時（如 "ji" -> 準備按 '3' 成「我」）不應誤顯示英文幽靈字
+        dec.clear();
+        for ch in "ji".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_composition_snapshot(10).english_ghost, "");
+    }
+
+    #[test]
+    fn test_standalone_consonant_bopomofo_symbols_and_zhuyin_selection() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 1. 單純聲母注音符號 + 空白鍵 (一聲) 必須可直接輸出注音文（如 c  -> ㄏ、1  -> ㄅ、c c  -> ㄏㄏ、ji3c  -> 我ㄏ）
+        for (keys, expected) in [
+            ("c ", "ㄏ"),
+            ("1 ", "ㄅ"),
+            ("2 ", "ㄉ"),
+            ("c c ", "ㄏㄏ"),
+            ("ji3c ", "我ㄏ"),
+        ] {
+            dec.clear();
+            for ch in keys.chars() {
+                dec.push_char(ch);
+            }
+            assert_eq!(
+                dec.get_preedit_string(),
+                expected,
+                "failed standalone bopomofo '{}' -> '{}'",
+                keys,
+                dec.get_preedit_string()
+            );
+        }
+
+        // 2. 輸入 "5j4" (住) 時，↓ 前 5 個候選應直接包含「ㄓㄨˋ [注]」，↑ 第 1 項應為「ㄓㄨˋ [注]」
+        dec.clear();
+        for ch in "5j4".chars() {
+            dec.push_char(ch);
+        }
+        let snap = dec.get_composition_snapshot(20);
+        let zy_pos_down = snap
+            .candidates
+            .iter()
+            .position(|c| c.text == "ㄓㄨˋ" && c.annotation.as_deref() == Some("注"))
+            .expect("expected ㄓㄨˋ [注] in down candidates");
+        assert!(zy_pos_down < 5, "expected ㄓㄨˋ [注] in top 5, got index {}", zy_pos_down);
+
+        let alts = dec.get_alternatives(20);
+        assert_eq!(alts[0].text, "ㄓㄨˋ");
+        assert_eq!(alts[0].annotation.as_deref(), Some("注"));
+
+        // 3. 尚未按空白鍵時（只按 'c'）透過 ↑ 選「ㄏ」後再繼續輸入 "c "，應接續組成 "ㄏㄏ"
+        dec.clear();
+        dec.push_char('c');
+        let c_alts = dec.get_alternatives(10);
+        assert_eq!(c_alts[0].text, "ㄏ");
+        dec.apply_alternative_selection(0);
+        assert_eq!(dec.get_preedit_string(), "ㄏ");
+        dec.push_char('c');
+        dec.push_char(' ');
+        assert_eq!(dec.get_preedit_string(), "ㄏㄏ");
+    }
+
+    #[test]
+    fn test_punctuation_in_preedit_cursor_backspace_and_navigation() {
+        let mut dec = DualPathDecoder::new();
+        dec.user_db = UserAdaptiveDb::in_memory().unwrap();
+
+        // 1. 組字中途輸入全形標點（如 '，'）：必須留在暫存區而不清空，並支援游標左移回到前面改字與刪除
+        for ch in "ji3rupwu0，".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "我今天，");
+
+        // 左移一次停在 "我今天|，"，再左移一次停在 "我今|天，" 進行重選與刪字
+        assert!(dec.move_cursor_left());
+        assert_eq!(dec.get_composition_snapshot(10).cursor_utf16, 3);
+        assert!(dec.move_cursor_left());
+        assert_eq!(dec.get_composition_snapshot(10).cursor_utf16, 2);
+
+        // 在 "我今|天，" 按 Backspace 應刪掉「今」，保留「我|天，」
+        assert!(dec.pop_char().is_some());
+        assert_eq!(dec.get_preedit_string(), "我天，");
+
+        // 移回末尾接續輸入「真好」，組成「我天，真好」
+        while dec.move_cursor_right() {}
+        for ch in "5p cl3".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "我天，真好");
+
+        // 提交「我天，真好」：逗號前後各自學習，不應跨逗號產生「天 -> 真好」的假 bigram
+        dec.commit_text("我天，真好");
+        let entries = dec.user_db.get_entries_snapshot(50);
+        assert!(entries.unigrams.iter().any(|u| u.word == "真好"));
+        assert!(!entries
+            .bigrams
+            .iter()
+            .any(|b| b.prev_word == "天" && b.next_word == "真好"));
+
+        // 2. 句尾標點也可透過 ↑ / ↓ 取得半形與相似標點候選，且 Backspace 可直接刪除標點
+        dec.clear();
+        for ch in "ji3，".chars() {
+            dec.push_char(ch);
+        }
+        assert_eq!(dec.get_preedit_string(), "我，");
+        let alts = dec.get_alternatives(10);
+        assert!(alts.iter().any(|c| c.text == ","));
+        assert!(dec.pop_char().is_some());
+        assert_eq!(dec.get_preedit_string(), "我");
+    }
 }

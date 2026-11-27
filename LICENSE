@@ -30,5 +30,7 @@ incorporates phrase and frequency data derived from:
 - Jieba / jieba-zh_TW (https://github.com/fxsjy/jieba and
   https://github.com/ldkrsi/jieba-zh_TW), Copyright (c) 2013 Sun Junyi,
   licensed under the MIT License.
+- SCOWL / English Speller Database (https://github.com/en-wl/wordlist),
+  Copyright 2000-2026 by Kevin Atkinson (permissive wordlist license).
 
 See THIRD_PARTY_LICENSES.md for the preserved full third-party license texts.

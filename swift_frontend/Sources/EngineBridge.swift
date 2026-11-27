@@ -1,13 +1,15 @@
 import Foundation
 
 public struct CandidateItem: Codable, Identifiable {
-    public var id: String { text }
+    public var id: String { "\(text)\u{0000}\(span_start ?? 0)\u{0000}\(span_end ?? 0)" }
     public let text: String
     public let score: Double
     public let candidate_type: String
     public let annotation: String?
     public let span_start: Int?
     public let span_end: Int?
+    public let preview_start_utf16: Int?
+    public let preview_len_utf16: Int?
 }
 
 public struct LearnedUnigramItem: Codable, Identifiable, Equatable {
@@ -42,6 +44,7 @@ public struct CompositionSnapshot: Codable {
     public let should_space_act_as_tone: Bool
     public let segment_count: Int
     public let syllable_count: Int?
+    public let english_ghost: String?
     public let candidates: [CandidateItem]
 }
 
@@ -152,6 +155,31 @@ public class SmartEngine {
     public func selectCandidate(at index: Int) -> Bool {
         guard let handle = handle else { return false }
         return smart_ime_select_candidate(handle, index)
+    }
+
+    public func getAlternatives(limit: Int = 50) -> [CandidateItem] {
+        guard let handle = handle else { return [] }
+        guard let cStr = smart_ime_get_alternatives_json(handle, limit) else { return [] }
+        let jsonString = String(cString: cStr)
+        smart_ime_free_string(UnsafeMutablePointer(mutating: cStr))
+
+        guard let data = jsonString.data(using: .utf8),
+              let alts = try? JSONDecoder().decode([CandidateItem].self, from: data) else {
+            return []
+        }
+        return alts
+    }
+
+    @discardableResult
+    public func selectAlternative(at index: Int) -> Bool {
+        guard let handle = handle else { return false }
+        return smart_ime_select_alternative(handle, index)
+    }
+
+    @discardableResult
+    public func acceptEnglishGhost() -> Bool {
+        guard let handle = handle else { return false }
+        return smart_ime_accept_english_ghost(handle)
     }
 
     public func commit(text: String) {
